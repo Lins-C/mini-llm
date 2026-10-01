@@ -1,0 +1,863 @@
+<!doctype html>
+<!--
+  Mini LLM – powered by AI-Implements · C. Lins
+  Copyright (c) 2026 C. Lins / AI-Implements – MIT-Lizenz, siehe LICENSE.
+  Dieser Code darf frei verwendet, verändert und erweitert werden.
+  Dieser Hinweis muss in allen Kopien und abgeleiteten Werken erhalten bleiben.
+-->
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f7f7f5">
+  <title>Mini LLM</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png">
+  <link rel="apple-touch-icon" href="/static/logo-180.png">
+  <link rel="stylesheet" href="/static/styles.css?v=71">
+</head>
+<body>
+  <div id="drop-overlay" class="drop-overlay" hidden>
+    <div class="drop-card">
+      <svg viewBox="0 0 24 24"><path d="M12 16V4m-5 5 5-5 5 5M5 14v5h14v-5"/></svg>
+      <strong>Dateien oder Ordner hier ablegen</strong>
+      <span>Mehrfachauswahl, ZIPs und komplette Ordner werden unterstützt.</span>
+    </div>
+  </div>
+
+  <div class="app-layout">
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <img class="mark" src="/static/logo.png" alt="" aria-hidden="true">
+          <span>Mini LLM</span>
+        </div>
+        <button id="close-sidebar" class="icon-button mobile-only" title="Sidebar schließen" aria-label="Sidebar schließen">
+          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </div>
+      <button id="sidebar-new-chat" class="sidebar-new" type="button">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        <span>Neuer Chat</span>
+      </button>
+      <div id="all-chats-drop" class="sidebar-section-title drop-target">
+        <span>Chats</span>
+        <button id="new-folder" class="mini-action" type="button" title="Neuer Ordner" aria-label="Neuer Ordner">
+          <svg viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17zM12 10v5M9.5 12.5h5"/></svg>
+        </button>
+      </div>
+      <nav id="chat-navigation" class="chat-navigation" aria-label="Chatverlauf">
+        <div id="ungrouped-chats" class="chat-list"></div>
+        <div id="folders" class="folders"></div>
+      </nav>
+      <div class="sidebar-footer">Chats und Projekte werden dauerhaft in deinem Nutzerkonto gespeichert.</div>
+      <section id="task-tokens" class="task-tokens" aria-label="Tokenverbrauch dieser Aufgabe">
+        <div class="task-tokens-label">
+          <span>Diese Aufgabe</span>
+          <span id="task-tokens-speed" class="task-tokens-speed" aria-live="polite">— Tok/s</span>
+          <i id="task-tokens-state" aria-hidden="true"></i>
+        </div>
+        <strong id="task-tokens-value">0</strong>
+        <small id="task-tokens-note">Tokens der laufenden Antwort</small>
+      </section>
+      <section id="cloud-usage" class="cloud-usage" aria-label="Ollama Cloud Nutzung">
+        <div class="cloud-usage-title">
+          <span>Ollama Cloud</span>
+          <div>
+            <button id="cloud-usage-refresh" type="button" title="Cloud-Nutzung aktualisieren" aria-label="Cloud-Nutzung aktualisieren">↻</button>
+            <a href="https://ollama.com/settings" target="_blank" rel="noopener noreferrer" title="Ollama-Einstellungen öffnen" aria-label="Ollama-Einstellungen öffnen">↗</a>
+          </div>
+        </div>
+        <div class="cloud-usage-windows">
+          <div class="cloud-usage-window">
+            <div id="cloud-usage-session-ring" class="cloud-usage-ring session" style="--usage: 0" aria-label="Sitzungsnutzung nicht verfügbar">
+              <strong id="cloud-usage-session-value">—</strong>
+            </div>
+            <span>Sitzung</span>
+          </div>
+          <div class="cloud-usage-window">
+            <div id="cloud-usage-weekly-ring" class="cloud-usage-ring weekly" style="--usage: 0" aria-label="Wochennutzung nicht verfügbar">
+              <strong id="cloud-usage-weekly-value">—</strong>
+            </div>
+            <span>Woche</span>
+          </div>
+        </div>
+        <small id="cloud-usage-note">Cloud-Nutzung wird geladen</small>
+      </section>
+      <section id="system-metrics" class="system-metrics" aria-label="Auslastung des Mac mini" hidden>
+        <div class="system-metrics-title">
+          <span>Mac mini</span>
+          <i id="system-metrics-state" title="Systemauslastung wird geladen"></i>
+        </div>
+        <div class="system-metric">
+          <div class="system-metric-label">
+            <span>CPU</span>
+            <strong id="cpu-usage">–</strong>
+          </div>
+          <div class="system-metric-track" aria-hidden="true">
+            <span id="cpu-usage-bar"></span>
+          </div>
+        </div>
+        <div class="system-metric">
+          <div class="system-metric-label">
+            <span>RAM</span>
+            <strong id="ram-usage">–</strong>
+          </div>
+          <div class="system-metric-track" aria-hidden="true">
+            <span id="ram-usage-bar"></span>
+          </div>
+        </div>
+        <p id="ram-usage-detail">Arbeitsspeicher wird ermittelt</p>
+      </section>
+    </aside>
+    <div id="sidebar-scrim" class="sidebar-scrim"></div>
+
+    <div class="shell">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="open-sidebar" class="icon-button mobile-only" title="Chats öffnen" aria-label="Chats öffnen">
+            <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+          <span id="active-chat-title" class="active-chat-title">Neuer Chat</span>
+        </div>
+        <div class="header-actions">
+          <button id="open-skills" class="icon-button skills-mobile-only" type="button"
+            title="Skills öffnen" aria-label="Skills öffnen">
+            <svg viewBox="0 0 24 24"><path d="M12 3.5c.7 4.8 3.2 7.3 8 8-4.8.7-7.3 3.2-8 8-.7-4.8-3.2-7.3-8-8 4.8-.7 7.3-3.2 8-8Z"/></svg>
+            <span id="active-skill-count" class="active-skill-count" hidden>0</span>
+          </button>
+          <button id="joshi-open" class="joshi-open" type="button"
+            title="JOSHI öffnen – aus einer Idee wird eine benutzbare Anwendung" aria-label="JOSHI öffnen">
+            <svg viewBox="0 0 24 24"><path d="M12 3.5 13.9 9l5.6 1.9-5.6 1.9L12 18.5l-1.9-5.7-5.6-1.9L10.1 9zM18.5 3.5v3M17 5h3"/></svg>
+            <span id="joshi-open-label">JOSHI</span>
+            <i id="joshi-open-status" class="joshi-open-status" hidden></i>
+          </button>
+          <span id="connection" class="connection" role="button" tabindex="0" title="Verbindung erneut prüfen"><i></i><span>Prüfe Ollama</span></span>
+          <button id="web-toggle" class="web-toggle" type="button" title="Websuche einschalten" aria-label="Websuche einschalten" aria-pressed="false">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5S14.3 18.1 12 20.5M12 3.5C9.7 5.9 8.5 8.7 8.5 12s1.2 6.1 3.5 8.5"/></svg>
+            <span>Web</span>
+          </button>
+          <button id="profile-context-toggle" class="profile-context-toggle" type="button"
+            title="Persönlichen Kontext einschalten" aria-label="Persönlichen Kontext einschalten"
+            aria-pressed="false">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.2"/><path d="M5.8 19c.7-3.5 2.8-5.3 6.2-5.3s5.5 1.8 6.2 5.3"/></svg>
+            <span>Über mich</span>
+          </button>
+          <button id="new-chat" class="icon-button" title="Neuer Chat" aria-label="Neuer Chat">
+            <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <div id="user-area" class="user-area" hidden>
+            <span id="user-avatar" class="user-avatar" aria-hidden="true">C</span>
+            <span id="user-name" class="user-name"></span>
+            <button id="logout" class="user-logout" type="button" title="Abmelden" aria-label="Abmelden">
+              <svg viewBox="0 0 24 24"><path d="M10 5H5v14h5M14 8l4 4-4 4M8 12h10"/></svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <nav id="message-rail" class="message-rail" aria-label="Im Chatverlauf springen" hidden></nav>
+
+      <main id="chat" class="chat" aria-live="polite">
+        <section id="welcome" class="welcome">
+          <img class="welcome-mark" src="/static/logo.png" alt="Mini LLM">
+          <h1>Womit kann ich helfen?</h1>
+          <p>Ziehe Dateien oder ganze Ordner direkt hier hinein.</p>
+        </section>
+      </main>
+
+      <footer class="composer-wrap">
+        <div id="attachments" class="attachments" hidden></div>
+        <div id="processing-status" class="processing-status" hidden>
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5v5M12 7.5h.01"/></svg>
+          <span></span>
+        </div>
+        <form id="composer" class="composer">
+          <input id="file-input" type="file" multiple hidden
+            accept=".txt,.md,.py,.json,.jsonl,.csv,.tsv,.yaml,.yml,.toml,.ini,.cfg,.html,.css,.js,.jsx,.ts,.tsx,.xml,.sql,.sh,.zsh,.log,.env,.java,.c,.cpp,.h,.hpp,.rs,.go,.rb,.php,.rtf,.pdf,.docx,.xlsx,.xls,.zip,.mp3,.wav,.m4a,.aac,.ogg,.oga,.flac,.opus,.webm,.mp4,.mov,.mkv,.avi,.m4v,.mpeg,.mpg,image/png,image/jpeg,image/webp,image/gif,audio/*,video/*">
+          <input id="directory-input" type="file" multiple webkitdirectory directory hidden>
+          <input id="voice-file-input" type="file" accept="audio/*" capture="user" hidden>
+          <textarea id="prompt" rows="1" placeholder="Nachricht an dein Modell …" aria-label="Nachricht"></textarea>
+          <div class="composer-toolbar">
+            <div class="toolbar-left">
+              <button id="attach" class="round-button" type="button" title="Dateien anhängen" aria-label="Dateien anhängen">
+                <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9"/></svg>
+              </button>
+              <button id="attach-folder" class="round-button" type="button" title="Ordner anhängen" aria-label="Ordner anhängen">
+                <svg viewBox="0 0 24 24"><path d="M3.5 7.5h6l2-2h9v13h-17z"/></svg>
+              </button>
+              <button id="record" class="round-button" type="button" title="Spracheingabe starten" aria-label="Spracheingabe starten">
+                <svg viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"/></svg>
+              </button>
+              <div class="control-center-wrap">
+                <button id="control-center-toggle" class="round-button" type="button"
+                  title="Steuerzentrale öffnen" aria-label="Steuerzentrale öffnen"
+                  aria-expanded="false">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4M9.5 12h5M12 9.5v5"/></svg>
+                </button>
+                <section id="control-center" class="control-center" aria-label="Steuerzentrale" hidden>
+                  <header>
+                    <div>
+                      <strong>Steuerzentrale</strong>
+                      <span id="control-persona-state">Globale Prägung</span>
+                    </div>
+                    <i id="control-profile-state" title="Persönlicher Kontext ist aus"></i>
+                  </header>
+                  <div class="token-summary">
+                    <div><span>Eingabe</span><strong id="usage-input-tokens">0</strong></div>
+                    <div><span>Ausgabe</span><strong id="usage-output-tokens">0</strong></div>
+                    <div><span>Aufrufe</span><strong id="usage-llm-calls">0</strong></div>
+                  </div>
+                  <div class="cost-summary">
+                    <span>Ollama lokal</span><strong>0,00 €</strong>
+                    <span>Cloud-Richtwert</span><strong id="usage-cloud-cost">0,0000 €</strong>
+                  </div>
+                  <p class="cost-note">Vergleichswert: 1 € Eingabe / 4 € Ausgabe je 1 Mio. Tokens.</p>
+                  <div class="control-actions">
+                    <button id="open-profile" type="button">
+                      <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3"/><path d="M6 19c.7-3.3 2.7-5 6-5s5.3 1.7 6 5"/></svg>
+                      <span><strong>Über mich</strong><small>Persönliche Daten und Bio</small></span>
+                    </button>
+                    <button id="open-persona" type="button">
+                      <svg viewBox="0 0 24 24"><path d="M12 3.5c.7 4.8 3.2 7.3 8 8-4.8.7-7.3 3.2-8 8-.7-4.8-3.2-7.3-8-8 4.8-.7 7.3-3.2 8-8Z"/></svg>
+                      <span><strong>Prägung</strong><small>Rolle für diesen Chat</small></span>
+                    </button>
+                    <button type="button" data-open-models>
+                      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01"/></svg>
+                      <span><strong>Modelle</strong><small>Laden und Eignung prüfen</small></span>
+                    </button>
+                  </div>
+                </section>
+              </div>
+              <label class="model-picker">
+                <span class="sr-only">Modell</span>
+                <select id="model"><option value="">Modelle laden …</option></select>
+                <svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg>
+              </label>
+            </div>
+            <button id="send" class="send-button" type="submit" disabled title="Senden" aria-label="Senden">
+              <svg class="send-icon" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></svg>
+              <svg class="stop-icon" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+            </button>
+          </div>
+        </form>
+        <p class="hint">Cmd/Strg+V fügt Bilder, Audio, Dateien und lange Texte direkt als Anhang ein.</p>
+      </footer>
+    </div>
+
+    <aside id="skills-sidebar" class="skills-sidebar" aria-label="Skills für diesen Chat">
+      <header class="skills-header">
+        <div>
+          <span>Für diesen Chat</span>
+          <strong>Skills</strong>
+        </div>
+        <button id="close-skills" class="icon-button skills-mobile-only" type="button"
+          title="Skills schließen" aria-label="Skills schließen">
+          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </header>
+      <p class="skills-intro">Markiere einen Inhalt im Chat, wähle Skills und starte die Bearbeitung gezielt.</p>
+      <section class="skill-shape" aria-label="Zuschnitt der Antwort">
+        <div class="skill-shape-row">
+          <span>Umfang</span>
+          <div id="answer-length" class="skill-chips"></div>
+        </div>
+        <div class="skill-shape-row">
+          <span>Dichte</span>
+          <div id="answer-density" class="skill-chips"></div>
+        </div>
+        <small id="skill-shape-note">Gilt für jede Antwort in diesem Chat.</small>
+      </section>
+      <div id="skills-list" class="skills-list"></div>
+      <section id="skill-target" class="skill-target" aria-live="polite">
+        <span>Ausgewählter Inhalt</span>
+        <strong id="skill-target-title">Noch nichts markiert</strong>
+        <small id="skill-target-preview">Klicke im Chat auf einen Prompt oder eine KI-Ausgabe.</small>
+      </section>
+      <button id="execute-skills" class="execute-skills" type="button" disabled>
+        <svg viewBox="0 0 24 24"><path d="M8 5.5 18 12 8 18.5z"/></svg>
+        <span>Auf Auswahl anwenden</span>
+      </button>
+      <footer class="skills-footer">
+        <span id="skills-state">Keine Skills aktiv</span>
+        <small>Aktive Skills gelten für jede Nachricht. „Auf Auswahl anwenden“ arbeitet zusätzlich auf einem markierten Inhalt.</small>
+      </footer>
+    </aside>
+    <div id="skills-scrim" class="skills-scrim"></div>
+  </div>
+
+  <dialog id="name-dialog">
+    <form id="name-form" method="dialog" class="name-card">
+      <h2 id="name-dialog-title">Name ändern</h2>
+      <input id="name-input" type="text" maxlength="80" autocomplete="off">
+      <div class="dialog-actions">
+        <button id="name-cancel" type="button" class="secondary-button">Abbrechen</button>
+        <button type="submit" class="primary-button">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="folder-dialog" class="folder-dialog">
+    <form id="folder-form" class="folder-card" method="dialog">
+      <header>
+        <div>
+          <span class="folder-dialog-kicker">Chat-Ordner</span>
+          <h2 id="folder-dialog-title">Neuen Ordner anlegen</h2>
+        </div>
+        <button id="folder-dialog-cancel-top" class="dialog-close" type="button" aria-label="Dialog schließen">×</button>
+      </header>
+      <label class="folder-field">
+        <span>Name</span>
+        <input id="folder-name-input" type="text" maxlength="60" autocomplete="off" required>
+      </label>
+      <fieldset class="folder-picker">
+        <legend>Symbol</legend>
+        <div id="folder-icon-options" class="folder-icon-options" aria-label="Ordnersymbol wählen"></div>
+      </fieldset>
+      <fieldset class="folder-picker">
+        <legend>Farbe</legend>
+        <div id="folder-color-options" class="folder-color-options" aria-label="Ordnerfarbe wählen"></div>
+      </fieldset>
+      <p class="folder-dialog-hint">Chats lassen sich per Drag-and-drop in diesen Ordner und wieder heraus verschieben.</p>
+      <div class="dialog-actions">
+        <button id="folder-dialog-cancel" type="button" class="secondary-button">Abbrechen</button>
+        <button type="submit" class="primary-button">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-folder-dialog" class="confirm-dialog">
+    <div class="confirm-card">
+      <div class="confirm-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/></svg>
+      </div>
+      <h2>Ordner löschen?</h2>
+      <p>Ganzen Ordner inkl. der Chats löschen?</p>
+      <span id="delete-folder-name" class="confirm-folder-name"></span>
+      <div class="dialog-actions">
+        <button id="delete-folder-cancel" type="button" class="secondary-button">Nein</button>
+        <button id="delete-folder-confirm" type="button" class="danger-button">Ja</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="auth-dialog">
+    <form id="auth-form" method="dialog" class="auth-card">
+      <img class="welcome-mark small" src="/static/logo.png" alt="">
+      <h2>Willkommen zurück</h2>
+      <p>Melde dich an, um deine Chats und Projekte zu öffnen.</p>
+      <label class="auth-field">
+        <span>E-Mail-Adresse</span>
+        <input id="login-email" type="email" placeholder="name@beispiel.de" autocomplete="email" required>
+      </label>
+      <label class="auth-field">
+        <span>Passwort</span>
+        <input id="login-password" type="password" placeholder="Passwort" autocomplete="current-password" required>
+      </label>
+      <p id="auth-error" class="error-text" hidden></p>
+      <button value="default" type="submit">Anmelden</button>
+      <button id="show-register" class="auth-secondary" type="button">Neuen Nutzer anlegen</button>
+    </form>
+  </dialog>
+
+  <dialog id="register-dialog">
+    <form id="register-form" method="dialog" class="auth-card">
+      <div class="welcome-mark small">+</div>
+      <h2>Nutzer anlegen</h2>
+      <p>Erstelle einen eigenen dauerhaft gespeicherten Bereich.</p>
+      <label class="auth-field">
+        <span>Name</span>
+        <input id="register-name" type="text" maxlength="80" placeholder="Vor- und Nachname" autocomplete="name" required>
+      </label>
+      <label class="auth-field">
+        <span>E-Mail-Adresse</span>
+        <input id="register-email" type="email" maxlength="254" placeholder="name@beispiel.de" autocomplete="email" required>
+      </label>
+      <label class="auth-field">
+        <span>Passwort</span>
+        <input id="register-password" type="password" minlength="6" placeholder="Mindestens 6 Zeichen" autocomplete="new-password" required>
+      </label>
+      <p id="register-error" class="error-text" hidden></p>
+      <button value="default" type="submit">Nutzer erstellen</button>
+      <button id="register-cancel" class="auth-secondary" type="button">Zurück zur Anmeldung</button>
+    </form>
+  </dialog>
+
+  <dialog id="profile-dialog" class="settings-dialog">
+    <form id="profile-form" class="settings-shell" method="dialog">
+      <header class="settings-header">
+        <div>
+          <span class="settings-eyebrow">Persönlicher Kontext</span>
+          <h2>Über mich</h2>
+          <p>Diese Angaben bleiben in deinem Nutzerkonto und werden nur bei aktiviertem Personensymbol an das Modell übergeben.</p>
+        </div>
+        <button id="profile-close" class="settings-close" type="button"
+          title="Über mich schließen" aria-label="Über mich schließen">
+          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </header>
+      <div class="settings-content">
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Grunddaten</h3>
+            <p>Für Anschreiben, Formulare und persönliche Antworten.</p>
+          </div>
+          <div class="profile-grid">
+            <label class="profile-field span-2"><span>Name</span><input id="profile-name" maxlength="120" autocomplete="name"></label>
+            <label class="profile-field"><span>Geburtsdatum</span><input id="profile-birth-date" type="date" autocomplete="bday"></label>
+            <label class="profile-field"><span>Telefon</span><input id="profile-phone" maxlength="80" autocomplete="tel"></label>
+            <label class="profile-field span-2"><span>E-Mail für Briefe</span><input id="profile-email" type="email" maxlength="254" autocomplete="email"></label>
+            <label class="profile-field"><span>Beruf / Funktion</span><input id="profile-occupation" maxlength="160" autocomplete="organization-title"></label>
+            <label class="profile-field"><span>Organisation</span><input id="profile-organization" maxlength="180" autocomplete="organization"></label>
+          </div>
+        </section>
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Adresse</h3>
+            <p>Kann bei einem Brief automatisch als Absender verwendet werden.</p>
+          </div>
+          <div class="profile-grid">
+            <label class="profile-field span-2"><span>Straße und Hausnummer</span><input id="profile-street" maxlength="180" autocomplete="street-address"></label>
+            <label class="profile-field"><span>Postleitzahl</span><input id="profile-postal-code" maxlength="30" autocomplete="postal-code"></label>
+            <label class="profile-field"><span>Ort</span><input id="profile-city" maxlength="120" autocomplete="address-level2"></label>
+            <label class="profile-field span-2"><span>Land</span><input id="profile-country" maxlength="100" autocomplete="country-name"></label>
+          </div>
+        </section>
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Leben und Beziehungen</h3>
+            <p>Hilft dem Modell, Rückfragen zu deinem Alltag passend einzuordnen.</p>
+          </div>
+          <div class="profile-grid">
+            <label class="profile-field span-2"><span>Bio</span><textarea id="profile-bio" maxlength="6000" rows="4" placeholder="Was sollte das Modell über dich wissen?"></textarea></label>
+            <label class="profile-field"><span>Familie und wichtige Personen</span><textarea id="profile-family" maxlength="4000" rows="4" placeholder="Zum Beispiel Kinder, Partnerin oder wichtige Namen"></textarea></label>
+            <label class="profile-field"><span>Haustiere</span><textarea id="profile-pets" maxlength="4000" rows="4" placeholder="Zum Beispiel Hund, Name, Alter und Besonderheiten"></textarea></label>
+            <label class="profile-field span-2"><span>Andere wichtige Details</span><textarea id="profile-important-details" maxlength="6000" rows="4" placeholder="Vorlieben, Einschränkungen, wiederkehrende Projekte oder weitere Hinweise"></textarea></label>
+          </div>
+        </section>
+        <section class="settings-section persona-global-section">
+          <div class="settings-section-head">
+            <h3>Globale Prägung</h3>
+            <p>Diese Rolle gilt für alle Chats, solange dort keine eigene Prägung gewählt wurde.</p>
+          </div>
+          <label class="profile-field"><span>Rolle, Ton und Arbeitsweise</span><textarea id="profile-global-persona" maxlength="6000" rows="5" placeholder="Zum Beispiel: Du bist mein präziser Geschäftsassistent. Schreibe klar, sachlich und lösungsorientiert."></textarea></label>
+        </section>
+      </div>
+      <p id="profile-error" class="settings-error" hidden></p>
+      <footer class="settings-footer">
+        <span>Der Profilkontext ist pro Chat standardmäßig ausgeschaltet.</span>
+        <div>
+          <button id="profile-cancel" type="button" class="secondary-button">Abbrechen</button>
+          <button type="submit" class="primary-button">Profil speichern</button>
+        </div>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="persona-dialog" class="persona-dialog">
+    <form id="persona-form" class="persona-card" method="dialog">
+      <div class="persona-card-head">
+        <span class="settings-eyebrow">Aktueller Chat</span>
+        <h2>Prägung auswählen</h2>
+        <p>Lege fest, welche Rolle das Modell in diesem Chat übernimmt.</p>
+      </div>
+      <label class="persona-choice">
+        <input type="radio" name="persona-mode" value="global">
+        <span><strong>Globale Prägung</strong><small id="global-persona-preview">Noch keine globale Rolle hinterlegt.</small></span>
+      </label>
+      <label class="persona-choice">
+        <input type="radio" name="persona-mode" value="custom">
+        <span><strong>Eigene Prägung für diesen Chat</strong><small>Überschreibt nur hier die globale Rolle.</small></span>
+      </label>
+      <textarea id="chat-persona" maxlength="6000" rows="5" placeholder="Beschreibe Rolle, Ton und Arbeitsweise für diesen Chat."></textarea>
+      <label class="persona-choice">
+        <input type="radio" name="persona-mode" value="none">
+        <span><strong>Ohne Prägung</strong><small>Das Modell antwortet mit seinem Standardverhalten.</small></span>
+      </label>
+      <div class="dialog-actions">
+        <button id="persona-cancel" type="button" class="secondary-button">Abbrechen</button>
+        <button type="submit" class="primary-button">Übernehmen</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="email-compose-dialog" class="email-compose-dialog">
+    <div class="email-compose-card">
+      <header>
+        <div>
+          <span class="settings-eyebrow">E-Mail-Entwurf</span>
+          <h2>In Mail öffnen</h2>
+          <p>Prüfe Empfänger und Betreff. Erst dein Tipp auf den blauen Button öffnet die Mail-App zuverlässig.</p>
+        </div>
+        <button id="email-compose-close" class="settings-close" type="button"
+          title="E-Mail-Entwurf schließen" aria-label="E-Mail-Entwurf schließen">
+          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </header>
+      <dl class="email-compose-summary">
+        <div><dt>An</dt><dd id="email-compose-to">Noch kein Empfänger</dd></div>
+        <div><dt>Betreff</dt><dd id="email-compose-subject">Ohne Betreff</dd></div>
+      </dl>
+      <p id="email-compose-hint" class="email-compose-hint" hidden></p>
+      <div class="email-compose-actions">
+        <button id="email-compose-copy" type="button" class="secondary-button">Text kopieren</button>
+        <button id="email-compose-download" type="button" class="secondary-button">EML laden</button>
+        <a id="email-compose-open" class="primary-button" href="mailto:">In Mail öffnen</a>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="preview-dialog" class="preview-dialog">
+    <div class="preview-shell">
+      <header class="preview-header">
+        <div>
+          <strong>HTML-Livevorschau</strong>
+          <span>Isolierte Vorschau ohne Zugriff auf deine Sitzung</span>
+        </div>
+        <div class="preview-actions">
+          <button id="preview-pdf" class="preview-pdf" type="button"
+            title="Vorschau als PDF sichern" aria-label="Vorschau als PDF sichern" disabled>
+            <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></svg>
+            <span>Als PDF sichern</span>
+          </button>
+          <button id="preview-close" class="preview-close" type="button"
+            title="Vorschau schließen" aria-label="Vorschau schließen">
+            <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+          </button>
+        </div>
+      </header>
+      <iframe id="preview-frame" class="preview-frame" title="HTML-Livevorschau"
+        sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+    </div>
+  </dialog>
+  <iframe id="preview-print-frame" class="preview-print-frame" title="PDF-Druckansicht"
+    sandbox="allow-same-origin allow-modals" referrerpolicy="no-referrer"
+    aria-hidden="true" tabindex="-1"></iframe>
+
+  <template id="message-template">
+    <article class="message">
+      <div class="avatar"></div>
+      <div class="message-body">
+        <div class="message-role"></div>
+        <div class="message-content"></div>
+        <div class="message-files"></div>
+        <div class="artifact-actions" hidden></div>
+        <div class="message-actions"></div>
+      </div>
+    </article>
+  </template>
+
+  <!-- JOSHI: aus einer Idee wird eine benutzbare Anwendung. Eigene Arbeitsfläche;
+       der Chat bleibt darunter bestehen, Aufträge laufen beim Wechsel weiter. -->
+  <section id="joshi-view" class="joshi-view" hidden aria-label="JOSHI">
+    <header class="joshi-head">
+      <button id="joshi-back" class="joshi-back" type="button" title="Zurück zum Chat – JOSHI arbeitet weiter">
+        <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg><span>Zurück zum Chat</span>
+      </button>
+      <button id="joshi-products-toggle" class="joshi-ghost joshi-narrow-only" type="button" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg><span>Produkte</span>
+      </button>
+      <div class="joshi-brand">
+        <strong>JOSHI</strong>
+        <span>Idee → Anwendung</span>
+      </div>
+      <div class="joshi-head-right">
+        <label class="joshi-model" title="Dasselbe Modell wie im Chat">
+          <span class="sr-only">Modell</span>
+          <select id="joshi-model"></select>
+        </label>
+        <button class="joshi-ghost joshi-wide-only" type="button" data-open-models title="Ollama-Modelle laden und Eignung prüfen">Modelle</button>
+      </div>
+    </header>
+
+    <div class="joshi-body">
+      <aside id="joshi-products" class="joshi-products" aria-label="JOSHI-Produkte">
+        <button id="joshi-new" class="joshi-new" type="button">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Neues Produkt</span>
+        </button>
+        <div class="joshi-section-title">Produkte</div>
+        <nav id="joshi-product-list" class="joshi-product-list"></nav>
+        <p class="joshi-products-note">Mit ☆ behältst du ein Produkt dauerhaft. Andere Entwürfe verschwinden nach 30 Tagen.</p>
+        <!-- Zwei getrennte Ordner: Material finden (Eingaben) und an Projekten arbeiten (Workspace). -->
+        <section id="joshi-eingaben" class="joshi-panel" aria-label="Asset-/Eingabeordner">
+          <div class="joshi-panel-kopf">
+            <button type="button" class="joshi-panel-titel" data-panel="eingaben" aria-expanded="false">
+              <span>Assets / Eingaben</span><small id="joshi-eingaben-kurz">aus</small>
+            </button>
+            <label class="joshi-schalter" title="Asset-/Eingabeordner verwenden">
+              <input type="checkbox" id="joshi-eingaben-an" aria-label="Asset-/Eingabeordner verwenden"><span></span>
+            </label>
+          </div>
+          <div class="joshi-panel-inhalt" hidden>
+            <div class="joshi-pfadzeile">
+              <input id="joshi-eingaben-pfad" type="text" spellcheck="false" autocomplete="off" aria-label="Pfad des Asset-/Eingabeordners">
+              <button type="button" class="joshi-mini" data-pfad="eingaben">Ordner auswählen</button>
+            </div>
+            <p id="joshi-eingaben-info" class="joshi-panel-info"></p>
+            <ul id="joshi-eingaben-liste" class="joshi-dateiliste"></ul>
+            <div class="joshi-panel-aktionen">
+              <button type="button" class="joshi-mini" data-import="eingaben">Vom Gerät importieren</button>
+              <input id="joshi-eingaben-upload" class="sr-only" type="file" multiple webkitdirectory directory aria-label="Dateien oder Ordner vom Gerät importieren">
+              <button type="button" class="joshi-mini" data-oeffnen="eingaben">Im Finder anzeigen</button>
+              <button type="button" class="joshi-mini" id="joshi-eingaben-neu">Aktualisieren</button>
+            </div>
+          </div>
+        </section>
+        <section id="joshi-workspace" class="joshi-panel" aria-label="Projekt-Workspace" hidden style="display:none">
+          <div class="joshi-panel-kopf">
+            <button type="button" class="joshi-panel-titel" data-panel="workspace" aria-expanded="false">
+              <span>Projekt-Workspace</span><small id="joshi-workspace-kurz">aus</small>
+            </button>
+            <label class="joshi-schalter" title="Workspace erlauben, wenn ein Auftrag ihn braucht">
+              <input type="checkbox" id="joshi-workspace-an" aria-label="Projekt-Workspace erlauben"><span></span>
+            </label>
+          </div>
+          <div class="joshi-panel-inhalt" hidden>
+            <div class="joshi-pfadzeile">
+              <input id="joshi-workspace-pfad" type="text" spellcheck="false" autocomplete="off" aria-label="Pfad des Projekt-Workspace">
+              <button type="button" class="joshi-mini" data-pfad="workspace">Ordner auswählen</button>
+            </div>
+            <p id="joshi-workspace-info" class="joshi-panel-info"></p>
+            <div class="joshi-panel-aktionen">
+              <button type="button" class="joshi-mini" data-import="workspace">Vom Gerät importieren</button>
+              <input id="joshi-workspace-upload" class="sr-only" type="file" multiple webkitdirectory directory aria-label="Dateien oder Ordner in den Workspace importieren">
+              <button type="button" class="joshi-mini" data-oeffnen="workspace">Im Finder anzeigen</button>
+            </div>
+          </div>
+        </section>
+        <!-- Gemeinsame Darstellung; JOSHIs Tokenwerte gehören zum gewählten Produkt. -->
+        <div id="joshi-nebenanzeigen" class="joshi-nebenanzeigen"></div>
+      </aside>
+      <div id="joshi-products-scrim" class="joshi-products-scrim"></div>
+
+      <section class="joshi-dialog" aria-label="Aufträge an JOSHI">
+        <div id="joshi-feed" class="joshi-feed" aria-live="polite"></div>
+        <form id="joshi-form" class="joshi-composer">
+          <input id="joshi-file-input" type="file" multiple hidden
+                 accept="image/png,image/jpeg,image/webp,image/gif,.txt,.md,.csv,.tsv,.json,.pdf,.docx,.xlsx,.xls,.html,.htm,.zip">
+          <div id="joshi-attachments" class="joshi-attachments" hidden aria-label="Anhänge für diesen Auftrag"></div>
+          <div id="joshi-empfehlung" class="joshi-empfehlung" hidden role="alert"></div>
+          <div id="joshi-vorschlaege" class="joshi-vorschlaege" hidden role="listbox" aria-label="Dateien aus dem Asset-/Eingabeordner"></div>
+          <div id="joshi-drop" class="joshi-input">
+            <textarea id="joshi-prompt" rows="2"
+                      placeholder="Beschreibe, was JOSHI für dich erstellen oder verändern soll …"
+                      aria-label="Auftrag an JOSHI"></textarea>
+            <div class="joshi-input-row">
+              <button id="joshi-attach" class="joshi-round" type="button" title="Bilder oder Dateien anhängen" aria-label="Bilder oder Dateien anhängen">
+                <svg viewBox="0 0 24 24"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9"/></svg>
+              </button>
+              <button id="joshi-web" class="web-toggle joshi-web" type="button" title="Websuche für diesen Auftrag einschalten"
+                      aria-label="Websuche für diesen Auftrag einschalten" aria-pressed="false">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5c2.3 2.4 3.5 5.2 3.5 8.5S14.3 18.1 12 20.5M12 3.5C9.7 5.9 8.5 8.7 8.5 12s1.2 6.1 3.5 8.5"/></svg>
+                <span>Web</span>
+              </button>
+              <span id="joshi-hint" class="joshi-hint">Bilder per Cmd/Strg+V oder Ziehen</span>
+              <button id="joshi-send" class="joshi-send" type="submit" title="An JOSHI senden" aria-label="An JOSHI senden" disabled>
+                <svg class="joshi-send-icon" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></svg>
+                <svg class="joshi-stop-icon" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>
+              </button>
+            </div>
+          </div>
+          <p id="joshi-web-info" class="joshi-web-info" hidden>🌐 Web an: JOSHI recherchiert aktuelle Daten (Produkte, Preise) — dauert länger, dafür aktuell.</p>
+        </form>
+      </section>
+
+      <main class="joshi-stage" aria-label="Laufende Anwendung">
+        <div class="joshi-toolbar">
+          <div class="joshi-title">
+            <input id="joshi-title" type="text" maxlength="80" aria-label="Name des Produkts" placeholder="Neues Produkt" disabled>
+            <span id="joshi-version" class="joshi-pill" hidden></span>
+            <span id="joshi-modus" class="joshi-modus" hidden></span>
+            <span id="joshi-state" class="joshi-state" hidden></span>
+          </div>
+          <div class="joshi-actions" id="joshi-actions">
+            <button id="joshi-undo" class="joshi-ghost" type="button" title="Zur vorherigen Version zurückkehren" disabled>
+              <svg viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M4 12h11a5 5 0 0 1 0 10h-2"/></svg><span>Rückgängig</span>
+            </button>
+            <div class="joshi-menu">
+              <button id="joshi-export-toggle" class="joshi-ghost" type="button" aria-haspopup="true" aria-expanded="false" disabled>
+                <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></svg><span>Exportieren</span>
+              </button>
+              <div class="joshi-menu-list" id="joshi-export-menu" hidden role="menu">
+                <button type="button" data-export="png" role="menuitem"><strong>Bild (PNG)</strong><small>Ganze Seite, scharf</small></button>
+                <button type="button" data-export="jpg" role="menuitem"><strong>Bild (JPG)</strong><small>Ganze Seite, kleinere Datei</small></button>
+                <button type="button" data-export="pdf" role="menuitem"><strong>PDF</strong><small>A4-Druckfassung</small></button>
+                <button type="button" data-export="docx" role="menuitem"><strong>Word (DOCX)</strong><small>Texte, Tabellen und Werte</small></button>
+              </div>
+            </div>
+            <div class="joshi-menu">
+              <button id="joshi-share-toggle" class="joshi-ghost" type="button" aria-haspopup="true" aria-expanded="false" disabled>
+                <svg viewBox="0 0 24 24"><circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="m8.2 10.8 7.6-4.1M8.2 13.2l7.6 4.1"/></svg><span>Teilen</span>
+              </button>
+              <div class="joshi-menu-list" id="joshi-share-menu" hidden role="menu">
+                <button type="button" data-export="html" role="menuitem"><strong>HTML-Anwendung</strong><small id="joshi-share-html-info">Eine Datei, läuft überall – mit aktuellem Stand</small></button>
+                <button type="button" data-export="png" role="menuitem"><strong>Als Bild</strong><small>Gesamtbild der Anwendung</small></button>
+                <button type="button" data-action="email" role="menuitem"><strong>E-Mail vorbereiten</strong><small>Text und Anwendung als Anhang</small></button>
+              </div>
+            </div>
+            <button id="joshi-discuss" class="joshi-ghost" type="button" title="Ein Chat über dieses Produkt – ohne HTML-Ballast" disabled>
+              <svg viewBox="0 0 24 24"><path d="M5 5h14v10H9l-4 4z"/></svg><span>Im Chat besprechen</span>
+            </button>
+            <div class="joshi-menu">
+              <button id="joshi-more-toggle" class="joshi-ghost joshi-square" type="button" aria-haspopup="true" aria-expanded="false" title="Weitere Aktionen" aria-label="Weitere Aktionen" disabled>
+                <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>
+              </button>
+              <div class="joshi-menu-list joshi-menu-right" id="joshi-more-menu" hidden role="menu">
+                <button type="button" data-action="keep" role="menuitem"><strong id="joshi-keep-label">Behalten</strong><small>Nicht automatisch aufräumen</small></button>
+                <button type="button" data-action="versions" role="menuitem"><strong>Versionen</strong><small>Frühere Stände ansehen und zurückholen</small></button>
+                <button type="button" data-action="workspace" role="menuitem" hidden style="display:none"><strong id="joshi-workspace-aktion">In Workspace überführen</strong><small id="joshi-workspace-aktion-info">Projektordner mit Dokumentation anlegen</small></button>
+                <button type="button" data-action="details" role="menuitem"><strong>Technische Details</strong><small>Prüfbericht, Ablauf, Code</small></button>
+                <button type="button" data-action="delete" role="menuitem" class="joshi-danger"><strong>Produkt löschen</strong><small>Mit allen Versionen</small></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="joshi-devicebar">
+          <div class="joshi-devices" role="radiogroup" aria-label="Vorschaubreite">
+            <button type="button" data-geraet="desktop" class="is-active" role="radio" aria-checked="true" title="Desktop">
+              <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M9 20h6M12 16.5V20"/></svg>
+            </button>
+            <button type="button" data-geraet="tablet" role="radio" aria-checked="false" title="Tablet">
+              <svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M11 18h2"/></svg>
+            </button>
+            <button type="button" data-geraet="phone" role="radio" aria-checked="false" title="Smartphone">
+              <svg viewBox="0 0 24 24"><rect x="7.5" y="3" width="9" height="18" rx="2"/><path d="M11 18h2"/></svg>
+            </button>
+          </div>
+          <span id="joshi-check" class="joshi-check"></span>
+          <button id="joshi-reload" class="joshi-ghost joshi-square" type="button" title="Anwendung neu starten (Zustand bleibt)" aria-label="Anwendung neu starten" disabled>
+            <svg viewBox="0 0 24 24"><path d="M19 8V4m0 0h-4m4 0-3 3a7 7 0 1 0 2 6"/></svg>
+          </button>
+        </div>
+        <div id="joshi-canvas" class="joshi-canvas" data-geraet="desktop">
+          <div id="joshi-empty" class="joshi-empty">
+            <div class="joshi-empty-mark">✦</div>
+            <h2>Was brauchst du gerade?</h2>
+            <p>Beschreibe eine Idee, gib ein Bild oder eine Datei dazu. JOSHI baut daraus eine Anwendung, die du sofort benutzen, ändern und teilen kannst.</p>
+            <div class="joshi-examples" id="joshi-examples">
+              <button type="button">Baue mir einen schönen ROI-Rechner für eine KI-Automatisierung.</button>
+              <button type="button">Erstelle eine Mitarbeiterumfrage mit 8 Fragen und Auswertung.</button>
+              <button type="button">Erstelle mir einen interaktiven Angebotsvergleich für drei Anbieter.</button>
+              <button type="button">Baue mir einen einfachen BMI-Rechner mit zwei Eingabefeldern, Berechnung und Reset-Button.</button>
+            </div>
+          </div>
+          <div id="joshi-frame-wrap" class="joshi-frame-wrap" hidden>
+            <iframe id="joshi-frame" class="joshi-frame" title="JOSHI-Anwendung"
+                    sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+          </div>
+          <div id="joshi-progress" class="joshi-progress" hidden aria-live="polite"></div>
+          <div id="joshi-runtime-error" class="joshi-runtime-error" hidden role="alert">
+            <span id="joshi-runtime-error-text">In der Anwendung ist ein Fehler aufgetreten.</span>
+            <button id="joshi-runtime-fix" type="button">Von JOSHI beheben lassen</button>
+            <button id="joshi-runtime-dismiss" type="button" aria-label="Hinweis schließen">×</button>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <nav class="joshi-tabs-mobile" aria-label="Bereich wählen">
+      <button type="button" data-bereich="dialog">
+        <svg viewBox="0 0 24 24"><path d="M5 5h14v10H9l-4 4z"/></svg><span>Auftrag</span>
+      </button>
+      <button type="button" data-bereich="stage" class="is-active">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M3 9h18"/></svg><span>Anwendung</span>
+      </button>
+    </nav>
+  </section>
+
+  <dialog id="joshi-details-dialog" class="joshi-dialog-box">
+    <div class="joshi-dialog-shell">
+      <header>
+        <div>
+          <span class="settings-eyebrow">JOSHI</span>
+          <h2 id="joshi-details-title">Technische Details</h2>
+        </div>
+        <button class="settings-close" type="button" data-close aria-label="Schließen">
+          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </header>
+      <div class="joshi-tabs" role="tablist">
+        <button type="button" data-tab="bericht" class="is-active" role="tab">Prüfbericht</button>
+        <button type="button" data-tab="ablauf" role="tab">Ablauf</button>
+        <button type="button" data-tab="code" role="tab">Code</button>
+        <button type="button" data-tab="versionen" role="tab">Versionen</button>
+      </div>
+      <div class="joshi-tab-body" id="joshi-details-body"></div>
+      <footer class="joshi-dialog-footer">
+        <button id="joshi-copy-code" type="button" class="secondary-button" hidden>Code kopieren</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="joshi-mail-dialog" class="joshi-dialog-box">
+    <div class="joshi-dialog-shell">
+      <header>
+        <div>
+          <span class="settings-eyebrow">Teilen</span>
+          <h2>E-Mail vorbereiten</h2>
+          <p>Die Anwendung hängt als HTML-Datei an und läuft beim Empfänger ohne Installation.</p>
+        </div>
+        <button class="settings-close" type="button" data-close aria-label="Schließen">
+          <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+        </button>
+      </header>
+      <label class="joshi-field"><span>Betreff</span><input id="joshi-mail-subject" type="text" maxlength="200"></label>
+      <label class="joshi-field"><span>Text</span><textarea id="joshi-mail-text" rows="11"></textarea></label>
+      <footer class="joshi-dialog-footer">
+        <button id="joshi-mail-copy" type="button" class="secondary-button">Text kopieren</button>
+        <button id="joshi-mail-html" type="button" class="secondary-button">HTML-Datei laden</button>
+        <button id="joshi-mail-eml" type="button" class="primary-button">Mail mit Anhang öffnen</button>
+      </footer>
+    </div>
+  </dialog>
+
+  <dialog id="model-manager" class="model-manager">
+    <div class="model-manager-shell">
+      <header>
+        <div>
+          <span class="model-manager-kicker">Ollama auf diesem Mac</span>
+          <h3>Modelle verwalten</h3>
+          <p id="model-hardware-summary">Hardware wird erkannt …</p>
+        </div>
+        <button id="model-manager-close" class="model-manager-close" type="button"
+                aria-label="Modellverwaltung schließen">×</button>
+      </header>
+      <div class="model-manager-grid">
+        <section class="model-library" aria-label="Installierte Modelle">
+          <div class="model-section-head">
+            <strong>Installiert</strong>
+            <button id="model-manager-refresh" type="button">Aktualisieren</button>
+          </div>
+          <div id="model-list" class="model-list">
+            <p class="model-empty">Modelle werden geladen …</p>
+          </div>
+          <div class="model-fit-legend">
+            <span><i class="good"></i> passt</span>
+            <span><i class="tight"></i> knapp</span>
+            <span><i class="too-large"></i> zu groß</span>
+            <span><i class="cloud"></i> Cloud</span>
+          </div>
+        </section>
+        <section class="ollama-terminal" aria-label="Ollama-Terminal">
+          <div class="ollama-terminal-title"><i></i><i></i><i></i><span>ollama</span></div>
+          <pre id="ollama-log">$ Modellnamen eingeben, zum Beispiel qwen3:8b</pre>
+          <div id="ollama-pull-progress" class="ollama-pull-progress" hidden>
+            <span></span>
+          </div>
+          <form id="ollama-form" autocomplete="off">
+            <span aria-hidden="true">$</span>
+            <input id="ollama-command" type="text" maxlength="260"
+                   placeholder="ollama pull qwen3:8b" aria-label="Ollama-Modell laden">
+            <button type="submit">Laden</button>
+          </form>
+          <small>Erlaubt ist ausschließlich <code>ollama pull &lt;modell&gt;</code>. Der Download läuft beim Schließen weiter.</small>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js?v=63" defer></script>
+  <script src="/static/modelle.js?v=1" defer></script>
+  <script src="/static/joshi.js?v=10" defer></script>
+  <a class="made-by" href="https://ai-implements.com" target="_blank" rel="noopener">made by AI-Implements</a>
+</body>
+</html>

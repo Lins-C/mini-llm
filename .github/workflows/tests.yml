@@ -1,0 +1,24 @@
+# Mini LLM – powered by AI-Implements · C. Lins
+# Führt bei jedem Push und Pull Request die Tests aus (macOS, inklusive WebKit-Prüfung).
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Abhängigkeiten
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+      - name: Tests
+        run: |
+          export MINI_LLM_DATA_DIR="$(mktemp -d)"
+          PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -q
