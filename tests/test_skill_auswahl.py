@@ -296,7 +296,7 @@ class VerdrahtungTests(unittest.TestCase):
         javascript = (WURZEL / "static/app.js").read_text(encoding="utf-8")
         self.assertNotIn('"Gib nur das fertige bearbeitete Ergebnis aus', javascript)
         self.assertIn("in der Form der aktiven Skills", javascript)
-        self.assertIn("app.js?v=63", (WURZEL / "static/index.html").read_text(encoding="utf-8"))
+        self.assertIn("app.js?v=64", (WURZEL / "static/index.html").read_text(encoding="utf-8"))
 
 
 # Eine Programmseite nach dem Muster des Dienstplan-Generators: Das Wesentliche

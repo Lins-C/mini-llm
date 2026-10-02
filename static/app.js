@@ -1518,7 +1518,7 @@ function renderWelcome() {
   messageRail.innerHTML = "";
   chat.innerHTML = `
     <section id="welcome" class="welcome">
-      <img class="welcome-mark" src="/static/logo.png" alt="Mini LLM">
+      <img class="welcome-mark" src="/static/logo.png?v=2" alt="Mini LLM">
       <h1>Womit kann ich helfen?</h1>
       <p>Ziehe Dateien oder ganze Ordner direkt hier hinein.</p>
     </section>`;

@@ -141,7 +141,7 @@ class JoshiOberflaecheTests(unittest.TestCase):
     def test_the_assets_were_republished(self):
         html = (WURZEL / "static/index.html").read_text(encoding="utf-8")
         self.assertNotIn("coding.js", html)
-        for datei in ("app.js?v=63", "joshi.js?v=10", "styles.css?v=71"):
+        for datei in ("app.js?v=64", "joshi.js?v=10", "styles.css?v=71"):
             self.assertIn(datei, html)
 
 if __name__ == "__main__":
