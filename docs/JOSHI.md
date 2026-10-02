@@ -464,6 +464,26 @@ Position steht auch in den technischen Details. Gemessen an sechs PC-Teilen:
 10–15 s, 3–4 von 6 mit belastbarer Quelle — die Trefferlage von DuckDuckGo
 schwankt von Lauf zu Lauf. Tests: `tests/test_joshi_recherche.py`.
 
+### Recherche für jeden Auftrag (`recherche.recherche_planen`, 02.10.2026)
+
+Mit eingeschaltetem **Web** plant JOSHI zuerst, welche Daten der Auftrag aus dem Netz braucht:
+
+| Plan | Weg |
+|---|---|
+| `produkte` – kaufbare Produkte mit Preisen | Katalog bzw. Preisaktualisierung über Preisvergleiche (wie unten beschrieben) |
+| `daten` – Orte, Adressen, Öffnungszeiten, Vereine, Termine, Kennzahlen … | bis zu 6 Themen: suchen, Seiten lesen, Einträge mit Feldern und Quelle ziehen |
+| `keine` – Gestaltung, Rechner, Logik | keine Recherche, kein Zeitverlust |
+
+Bei `daten` nennt das Modell nur Einträge, die in den gelesenen Texten stehen (JOSHI prüft
+nach), Quellen nur aus den tatsächlich geladenen URLs. Die Tabelle geht als verbindliche
+Datenbasis in Bau- oder Änderungsauftrag („bestehende Daten ergänzen, nichts erfinden“), liegt
+im Arbeitsordner unter `recherche/daten-<Datum>.json`, und die Abnahme prüft, dass mindestens
+70 % der Einträge in der neuen Version stehen. „Preise aktualisieren“ bei einer Änderung nutzt
+weiter den direkten Preistausch.
+
+Real gemessen: Reiseplaner Barcelona → 12 Sehenswürdigkeiten mit Quelle in 6 s;
+Bundesliga-Übersicht → 18 Vereine in 14 s; BMI-Rechner → keine Recherche.
+
 ### Neubau mit aktuellen Produktdaten aus dem Netz (`recherche.katalog_erstellen`, 29.09.2026)
 
 Verlangt ein Neubau aktuelle Daten aus dem Netz („PC-Konfigurator mit aktuellen

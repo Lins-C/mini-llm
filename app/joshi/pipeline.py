@@ -233,6 +233,8 @@ class Lauf:
         # für den Auftrag an das Modell und für den Abgleich in der Abnahme.
         self.recherche_funde: list[recherche.Fund] = []
         self.recherche_html = ""
+        # Allgemeine Recherche (Orte, Adressen, Termine …): Einträge mit Quelle.
+        self.recherche_daten: list[dict[str, Any]] = []
         self.projekt_stand: projektdateien.Projekt | None = None
 
     # ------------------------------------------------------------ Meldungen
@@ -827,14 +829,20 @@ class Lauf:
 
     async def katalog_ausfuehren(self, verstaendnis: dict[str, Any]) -> None:
         """Neubau: aktuelle Produkte samt Preis und Leistung aus dem Netz, bevor das Modell baut."""
-        await self.schritt("recherche", "aktiv", "Kategorien für die Recherche werden geplant …")
+        await self.schritt("recherche", "aktiv", "JOSHI plant, welche Daten aus dem Netz nötig sind …")
 
         async def melden(text: str) -> None:
             await self.schritt("recherche", "aktiv", text[:160])
-            if not text.startswith(("Aktuelle Produkte suchen", "Preise recherchieren ·")):
+            if not text.startswith(("Aktuelle Produkte suchen", "Preise recherchieren ·", "Recherche ·")):
                 await self.technik(f"Recherche: {text}")
 
         auftrag = f"{self.eingabe.text}\n\nFunktionen: " + "; ".join(verstaendnis.get("funktionen") or [])
+        plan = await self.gemessen(recherche.recherche_planen(self.zugang, self.modell, auftrag, self.verbrauch))
+        await self.technik(f"Rechercheplan: {plan['art']} · " + "; ".join(f"{th['name']} ({th['suche']})"
+                                                                        for th in plan["themen"]))
+        if plan["art"] != "produkte":
+            await self.daten_einholen(plan, melden, ziel="material")
+            return
         katalog, funde = await self.gemessen(recherche.katalog_erstellen(
             self.zugang, self.modell, auftrag, self.verbrauch, melden=melden))
         if not katalog:
@@ -862,10 +870,75 @@ class Lauf:
                                           "mit genau diesen Daten gebaut."))
         self.eingabe.material = (recherche.katalog_text(katalog) + "\n\n" + (self.eingabe.material or "")).strip()
 
+    async def daten_einholen(self, plan: dict[str, Any], melden: Any, *, ziel: str) -> None:
+        """Allgemeine Recherche: Einträge mit Feldern und Quelle — in den Bau- oder Änderungsauftrag."""
+        if plan["art"] == "keine" or not plan["themen"]:
+            await self.schritt("recherche", "fertig", "Für diesen Auftrag sind keine Daten aus dem Netz nötig")
+            return
+        eintraege = await self.gemessen(recherche.daten_recherchieren(
+            self.zugang, self.modell, plan, self.verbrauch, melden=melden))
+        if not eintraege:
+            await self.schritt("recherche", "fertig", "Keine verlässlichen Daten im Netz gefunden")
+            await self.melde("hinweis", text="JOSHI hat im Netz keine verlässlichen Daten zu diesem Auftrag gefunden. "
+                                             "Es geht ohne recherchierte Daten weiter.")
+            return
+        self.recherche_daten = eintraege
+        for e in eintraege:
+            await self.technik(f"Daten {e['thema']}: {e['name']} · "
+                               + "; ".join(f"{k}: {v}" for k, v in e["werte"].items())[:200] + f" · {e['quelle']}")
+        try:
+            ordner = projektdateien.ordner(database.DATA_DIR, self.produkt) / "recherche"
+            ordner.mkdir(parents=True, exist_ok=True)
+            (ordner / f"daten-{time.strftime('%Y%m%d-%H%M')}.json").write_text(
+                json.dumps({"stand": recherche.stand(), "eintraege": eintraege}, ensure_ascii=False, indent=1),
+                encoding="utf-8")
+        except (OSError, projektdateien.ProjektFehler):
+            pass
+        themen = list(dict.fromkeys(e["thema"] for e in eintraege))
+        await self.schritt("recherche", "fertig", f"{len(eintraege)} Einträge zu {len(themen)} Themen aus dem Netz "
+                                                  f"(Stand {recherche.stand()})")
+        await self.melde("hinweis", text=(f"Daten recherchiert: {len(eintraege)} Einträge zu {', '.join(themen)} — "
+                                          "mit Quelle. JOSHI baut sie in die Anwendung ein."))
+        text = recherche.daten_text(eintraege)
+        if ziel == "material":
+            self.eingabe.material = (text + "\n\n" + (self.eingabe.material or "")).strip()
+        else:
+            self.wunsch = f"{self.wunsch or self.eingabe.text}\n\n{text}"
+
     async def recherche_ausfuehren(self, html: str) -> None:
-        """Preise aus dem Netz, bevor das Modell eine Zeile schreibt — mit Quelle, nie geraten."""
+        """Daten aus dem Netz, bevor das Modell eine Zeile schreibt — mit Quelle, nie geraten.
+
+        „Preise aktualisieren“ tauscht die Preise vorhandener Produkte (Preisvergleiche); jeder andere
+        Wunsch wird geplant und gezielt recherchiert (neue Einträge, Fakten, Termine …).
+        """
         schritte = [("recherche", "Daten aus dem Netz"), *SCHRITTE[self.art]]
         await self.melde("plan", schritte=[{"id": k, "text": t} for k, t in schritte], auftragsart=self.art)
+        wunsch = f"{self.eingabe.text}\n{(self.linie or {}).get('wunsch', '')}"
+        if not recherche.bedarf(wunsch):
+            await self.schritt("recherche", "aktiv", "JOSHI plant, welche Daten aus dem Netz nötig sind …")
+
+            async def melden(text: str) -> None:
+                await self.schritt("recherche", "aktiv", text[:160])
+                if not text.startswith(("Recherche ·", "Preise recherchieren ·", "Aktuelle Produkte suchen")):
+                    await self.technik(f"Recherche: {text}")
+
+            bestand = " · ".join([*(self.baseline.get("ueberschriften") or [])[:12], *(self.baseline.get("knoepfe") or [])[:12]])
+            plan = await self.gemessen(recherche.recherche_planen(self.zugang, self.modell, wunsch, self.verbrauch,
+                                                                  bestand=bestand))
+            await self.technik(f"Rechercheplan: {plan['art']} · " + "; ".join(f"{th['name']} ({th['suche']})"
+                                                                            for th in plan["themen"]))
+            if plan["art"] == "produkte":
+                katalog, funde = await self.gemessen(recherche.katalog_erstellen(
+                    self.zugang, self.modell, wunsch, self.verbrauch, melden=melden))
+                if katalog:
+                    self.recherche_funde = funde
+                    await self.schritt("recherche", "fertig", f"{len(katalog)} aktuelle Produkte mit Preis aus dem Netz")
+                    self.wunsch = f"{self.wunsch or self.eingabe.text}\n\n{recherche.katalog_text(katalog)}"
+                else:
+                    await self.schritt("recherche", "fertig", "Keine verlässlichen Produktdaten im Netz gefunden")
+                return
+            await self.daten_einholen(plan, melden, ziel="wunsch")
+            return
         await self.schritt("recherche", "aktiv", "Produkte und Preise werden aus der Anwendung gelesen …")
         positionen = await self.gemessen(recherche.positionen_lesen(self.zugang, self.modell, html, self.verbrauch))
         if not positionen:
@@ -909,7 +982,8 @@ class Lauf:
             self.wunsch = f"{self.wunsch or self.eingabe.text}\n\n{recherche.auftrag_text(funde)}"
 
     def datenabgleich(self, html: str, bericht: pruefer.Pruefbericht) -> None:
-        """Stehen die recherchierten Preise wirklich in der neuen Version?"""
+        """Stehen die recherchierten Preise bzw. Daten wirklich in der neuen Version?"""
+        self._daten_eintraege_abgleichen(html, bericht)
         gefunden = [f for f in self.recherche_funde if f.neu is not None]
         if not gefunden:
             return
@@ -950,6 +1024,26 @@ class Lauf:
                     or abnahme.ist_mobil(kriterium):
                 return []
         return [str(e.get("id")) for e in offen]
+
+    def _daten_eintraege_abgleichen(self, html: str, bericht: pruefer.Pruefbericht) -> None:
+        if not self.recherche_daten:
+            return
+        drin, fehlend = recherche.daten_abgleich(html, self.recherche_daten)
+        bestanden = len(drin) * 10 >= len(self.recherche_daten) * 7
+        ergebnis = {"id": "daten_recherchiert", "pflicht": True, "nachweis": "daten",
+                    "beschreibung": f"Die {len(self.recherche_daten)} im Netz recherchierten Einträge stehen in der Anwendung",
+                    "status": "PASS" if bestanden else "FAIL", "beleg": "daten",
+                    "begruendung": f"{len(drin)} von {len(self.recherche_daten)} übernommen"
+                                   + (f"; fehlt: {', '.join(e['name'] for e in fehlend[:6])}" if fehlend else "")}
+        abnahme_dict = bericht.abnahme or {"ergebnisse": [], "zaehlung": {"PASS": 0, "FAIL": 0, "NOT_PROVEN": 0}}
+        abnahme_dict.setdefault("ergebnisse", []).append(ergebnis)
+        zaehlung = abnahme_dict.setdefault("zaehlung", {"PASS": 0, "FAIL": 0, "NOT_PROVEN": 0})
+        zaehlung[ergebnis["status"]] = int(zaehlung.get(ergebnis["status"], 0)) + 1
+        bericht.abnahme = abnahme_dict
+        if not bestanden:
+            bericht.befunde.append(pruefer.Befund(
+                "abnahme", "Die recherchierten Daten sind noch nicht übernommen: "
+                + "; ".join(e["name"] for e in fehlend[:8]), ergebnis["begruendung"]))
 
     async def _linie_bereinigen(self, linie: dict[str, Any]) -> dict[str, Any]:
         """Ein früher als Ergänzung verbuchtes Zurückstellen wird nachträglich richtig verbucht."""

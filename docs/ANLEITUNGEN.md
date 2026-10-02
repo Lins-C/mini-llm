@@ -64,7 +64,8 @@ Nur den Dienst neu einrichten: `install-24-7.command`. Entfernen: `uninstall-24-
 
 1. Oben auf **JOSHI**
 2. Beschreiben, was du brauchst – so konkret wie möglich, gern mit Bildern oder Dateien
-3. Optional **Web** einschalten: JOSHI recherchiert aktuelle Produkte und Preise mit Quelle
+3. Optional **Web** einschalten: JOSHI recherchiert vorab, was der Auftrag braucht (Produkte und Preise,
+   Orte, Öffnungszeiten, Listen …), und baut die Daten mit Quelle ein
 4. JOSHI baut, lädt die Anwendung im Browser, bedient und prüft sie, repariert Fehler selbst
 
 Danach einfach schreiben, was anders sein soll. Nützliche Sätze:

@@ -147,3 +147,46 @@ class DruckTests(unittest.TestCase):
         self.assertEqual(len(PdfReader(io.BytesIO(daten)).pages), 1)
         self.assertIn("export.DRUCK_JS", "export.DRUCK_JS")
         self.assertIn('"#1f2937"', export.DRUCK_JS)          # helle Schrift auf Weiß wird dunkel
+
+
+class AllgemeineRechercheTests(unittest.TestCase):
+    """02.10.2026: Recherche für jeden Auftrag, nicht nur für Hardware-Preise."""
+
+    class Zugang:
+        def __init__(self, antworten):
+            self.antworten = list(antworten)
+
+        async def strukturiert(self, *a, **k):
+            return self.antworten.pop(0)
+
+    TEXT = ("Die schönsten Sehenswürdigkeiten in Barcelona: Sagrada Família, täglich 9–20 Uhr, Eintritt 26 €. "
+            "Park Güell, 9:30–19:30 Uhr. Casa Batlló am Passeig de Gràcia 43.")
+
+    def suche(self, anfrage: str) -> list[dict[str, str]]:
+        return [{"title": "Barcelona Sehenswürdigkeiten 2026", "url": "https://reise.example.org/barcelona", "snippet": self.TEXT}]
+
+    def test_plan_decides_between_products_data_and_nothing(self):
+        plan = asyncio.run(r.recherche_planen(self.Zugang([{"art": "daten", "themen": [
+            {"name": "Sehenswürdigkeiten Barcelona", "suche": "Barcelona Sehenswürdigkeiten Öffnungszeiten 2026",
+             "felder": ["Öffnungszeiten", "Eintritt"]}]}]), "m", "Reiseplaner Barcelona", {}))
+        self.assertEqual(plan["art"], "daten")
+        self.assertEqual(plan["themen"][0]["felder"], ["Öffnungszeiten", "Eintritt"])
+        keine = asyncio.run(r.recherche_planen(self.Zugang([{"art": "keine", "themen": [{"name": "x", "suche": "y"}]}]),
+                                               "m", "Mach den Hintergrund heller", {}))
+        self.assertEqual(keine["art"], "keine")
+
+    def test_only_entries_that_exist_in_the_pages_with_source(self):
+        plan = {"art": "daten", "themen": [{"name": "Sehenswürdigkeiten", "suche": "Barcelona Sehenswürdigkeiten",
+                                            "felder": ["Öffnungszeiten"]}]}
+        zugang = self.Zugang([{"eintraege": [
+            {"name": "Sagrada Família", "werte": {"Öffnungszeiten": "9–20 Uhr", "Eintritt": "26 €"},
+             "quelle": "https://reise.example.org/barcelona"},
+            {"name": "Park Güell", "werte": {"Öffnungszeiten": "9:30–19:30 Uhr"}, "quelle": "erfunden"},
+            {"name": "Torre Imaginaria", "werte": {"Öffnungszeiten": "immer"}}]}])            # nicht im Text
+        eintraege = asyncio.run(r.daten_recherchieren(zugang, "m", plan, {}, suche=self.suche, seiten_laden=None))
+        self.assertEqual([e["name"] for e in eintraege], ["Sagrada Família", "Park Güell"])
+        self.assertEqual(eintraege[1]["quelle"], "https://reise.example.org/barcelona")   # Quelle nur aus echten URLs
+        text = r.daten_text(eintraege)
+        self.assertIn("- Sagrada Família — Öffnungszeiten: 9–20 Uhr; Eintritt: 26 € (Quelle: reise.example.org)", text)
+        drin, fehlend = r.daten_abgleich("const ORTE = ['Sagrada Família'];", eintraege)
+        self.assertEqual(([e["name"] for e in drin], [e["name"] for e in fehlend]), (["Sagrada Família"], ["Park Güell"]))

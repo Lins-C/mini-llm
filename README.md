@@ -48,7 +48,8 @@ Hintergrund, öffnet den Browser und zeigt beim ersten Mal die Zugangsdaten an.
   prüft sie gegen einen Abnahmevertrag und repariert gefundene Fehler selbst
 - Jede Änderung wird eine neue Version; „Rückgängig“ holt die vorige zurück
 - Große Änderungen in geprüften Schritten, große Anwendungen intern als Projektdateien
-- **Web-Schalter:** recherchiert aktuelle Produkte und Preise mit Quelle, bevor gebaut wird
+- **Web-Schalter:** recherchiert vorab gezielt für den Auftrag – Produkte mit Preisen, Orte,
+  Öffnungszeiten, Termine, Listen … – und baut die Daten mit Quelle in die Anwendung ein
 - Export als PNG/JPG, PDF (A4, eine Seite wenn möglich), Word; Teilen als HTML oder ZIP
 
 Details zur Architektur: [docs/JOSHI.md](docs/JOSHI.md)

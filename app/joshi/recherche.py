@@ -42,7 +42,7 @@ HARDWARE = re.compile(r"\b(?:cpu|gpu|prozessor|grafikkarte|mainboard|motherboard
 BEVORZUGT_HARDWARE = ("mindfactory.de", "geizhals.de", "idealo.de")
 BEVORZUGT_ALLGEMEIN = ("idealo.de", "geizhals.de")
 # Seiten, die zu Preisen oft nur Werbung, Tests oder Foren liefern.
-MEIDEN = ("youtube.com", "reddit.com", "wikipedia.org", "facebook.com", "instagram.com", "tiktok.com",
+MEIDEN = ("pinterest.", "youtube.com", "reddit.com", "wikipedia.org", "facebook.com", "instagram.com", "tiktok.com",
           "computerbase.de/forum", "pcgameshardware.de/forum")
 
 
@@ -665,3 +665,163 @@ def katalog_text(katalog: list[dict[str, Any]]) -> str:
                "- Jede Auswahl, jeder Startwert und jedes Zurücksetzen verweist nur auf Produkte, die in dieser "
                "Datenstruktur existieren — nie auf eine ID, die es nicht gibt."]
     return "\n".join(zeilen)
+
+
+# ------------------------------------------------------------------ Allgemeine Recherche
+# 02.10.2026: Die Recherche konnte nur Produkte mit Preisen („nur für Hardware brauchbar“).
+# Jetzt plant JOSHI je Auftrag, welche Daten aus dem Netz nötig sind: Produkte mit Preisen
+# laufen weiter über Preisvergleiche, alles andere (Sehenswürdigkeiten, Ärzte, Öffnungszeiten,
+# Vereine, Termine …) wird als Einträge mit Feldern und Quelle aus echten Seiten gelesen.
+PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "art": {"type": "string", "enum": ["produkte", "daten", "keine"]},
+        "themen": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"}, "suche": {"type": "string"},
+            "felder": {"type": "array", "items": {"type": "string"}}}, "required": ["name", "suche"]}},
+    },
+    "required": ["art", "themen"],
+}
+EINTRAEGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"eintraege": {"type": "array", "items": {"type": "object", "properties": {
+        "name": {"type": "string"}, "werte": {"type": "object"}, "quelle": {"type": "string"}},
+        "required": ["name"]}}},
+    "required": ["eintraege"],
+}
+
+
+async def recherche_planen(zugang: Any, modell: str, auftrag: str, verbrauch: dict[str, int],
+                           bestand: str = "") -> dict[str, Any]:
+    """Welche Daten aus dem Netz braucht dieser Auftrag? „keine“, wenn sich nichts recherchieren lässt."""
+    jahr = datetime.date.today().year
+    nachrichten = [
+        {"role": "system", "content": (
+            "Du planst eine Internetrecherche für eine Web-Anwendung, BEVOR sie gebaut oder geändert wird. "
+            "Entscheide, welche echten, aktuellen Daten aus dem Netz die Anwendung braucht.\n"
+            "- art „produkte“: kaufbare Produkte mit Preisen (Hardware, Geräte …)\n"
+            "- art „daten“: alle anderen Fakten und Listen (Orte, Adressen, Öffnungszeiten, Termine, Kennzahlen …)\n"
+            "- art „keine“: der Auftrag braucht keine Daten aus dem Netz (z. B. reine Gestaltung, Rechner)\n"
+            f"Höchstens 6 Themen, je eine präzise deutsche Suchanfrage (bei Aktuellem mit {jahr}) und die "
+            "Felder, die je Eintrag gebraucht werden (z. B. Adresse, Öffnungszeiten, Preis). "
+            "NICHT umsetzen, nur planen – keine Inhalte, keine Anwendung. Antworte NUR mit JSON genau in dieser "
+            'Form:\n{"art": "daten", "themen": [{"name": "Sehenswürdigkeiten Barcelona", '
+            f'"suche": "Barcelona Sehenswürdigkeiten Öffnungszeiten {jahr}", "felder": ["Adresse", "Öffnungszeiten", '
+            '"Eintritt"]}]}')},
+        {"role": "user", "content": f"<auftrag>\n{auftrag[:4000]}\n</auftrag>"
+                                    + (f"\n\nBisherige Daten der Anwendung (Auszug):\n{bestand[:1500]}" if bestand else "")}]
+    daten = await _json_mit_nachfrage(zugang, modell, nachrichten, PLAN_SCHEMA, "themen", verbrauch)
+    art = str((daten or {}).get("art") or "keine")
+    themen = []
+    for eintrag in (daten or {}).get("themen") or []:
+        if isinstance(eintrag, str):
+            eintrag = {"name": eintrag, "suche": eintrag}
+        if not isinstance(eintrag, dict):
+            continue
+        # Modelle benennen die Felder unterschiedlich („thema“, „query“, „suchanfrage“ …).
+        name = next((str(eintrag[k]) for k in ("name", "thema", "titel", "topic") if str(eintrag.get(k) or "").strip()), "")
+        suche = next((str(eintrag[k]) for k in ("suche", "query", "suchanfrage", "suchbegriff", "search")
+                      if str(eintrag.get(k) or "").strip()), name)
+        if not name.strip():
+            continue
+        felder = [str(f)[:40] for f in eintrag.get("felder") or eintrag.get("fields") or [] if str(f).strip()][:8]
+        themen.append({"name": name.strip()[:60], "suche": suche.strip()[:140], "felder": felder})
+    return {"art": art if art in {"produkte", "daten", "keine"} else "keine", "themen": themen[:6]}
+
+
+def _im_text(name: str, texte: str) -> bool:
+    """Steht der Eintrag wirklich in den gelesenen Texten? Mehrheit der tragenden Wörter genügt."""
+    worte = [w for w in re.findall(r"[a-zäöüß0-9]{3,}", (name or "").lower())
+             if w not in {"und", "der", "die", "das", "von", "für", "mit", "the", "and"}]
+    klein = (texte or "").lower()
+    return bool(worte) and sum(w in klein for w in worte) * 2 >= len(worte) + (1 if len(worte) > 2 else 0)
+
+
+async def eintraege_aus_texten(zugang: Any, modell: str, thema: dict[str, Any], texte: str,
+                               quellen: list[str], verbrauch: dict[str, int], grenze: int = 12) -> list[dict[str, Any]]:
+    felder = ", ".join(thema.get("felder") or []) or "die wichtigsten Angaben"
+    nachrichten = [
+        {"role": "system", "content": (
+            f"Aus den folgenden Texten echter Webseiten ziehst du Einträge zum Thema „{thema['name']}“. "
+            f"Je Eintrag: name, werte (Objekt mit diesen Feldern, soweit im Text genannt: {felder}) und quelle "
+            "(die URL der Seite, aus der er stammt). Nur was wörtlich in den Texten steht – nichts aus dem "
+            f"Gedächtnis ergänzen, fehlende Werte weglassen. Höchstens {grenze} Einträge. Nur JSON: "
+            '{"eintraege": [...]}')},
+        {"role": "user", "content": f"Quellen:\n" + "\n".join(quellen) + f"\n\nTexte:\n<texte>\n{texte[:14_000]}\n</texte>"}]
+    daten = await _json_mit_nachfrage(zugang, modell, nachrichten, EINTRAEGE_SCHEMA, "eintraege", verbrauch)
+    ergebnis = []
+    for eintrag in (daten or {}).get("eintraege") or []:
+        if not isinstance(eintrag, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(eintrag.get("name") or "")).strip()[:100]
+        if len(name) < 3 or not _im_text(name, texte):
+            continue
+        werte = eintrag.get("werte") if isinstance(eintrag.get("werte"), dict) else {}
+        werte = {str(k)[:40]: str(v)[:200] for k, v in werte.items() if str(v).strip() and str(v).strip().lower()
+                 not in {"unbekannt", "n/a", "-", "–", "none", "null"}
+                 and str(v).strip().lower() != name.lower()}          # „Name: Park Güell“ nicht doppelt
+        quelle = str(eintrag.get("quelle") or "")
+        if quelle not in quellen:
+            quelle = quellen[0] if quellen else ""
+        ergebnis.append({"thema": thema["name"], "name": name, "werte": werte, "quelle": quelle})
+        if len(ergebnis) >= grenze:
+            break
+    return ergebnis
+
+
+async def daten_recherchieren(zugang: Any, modell: str, plan: dict[str, Any], verbrauch: dict[str, int], *,
+                              melden: Callable[[str], Any] | None = None,
+                              suche: Callable[[str], list[dict[str, str]]] = _ddg,
+                              seiten_laden: Callable[[list[dict[str, str]]], Any] | None = seiten_laden_standard,
+                              ) -> list[dict[str, Any]]:
+    """Einträge mit Quelle zu jedem geplanten Thema — nur aus echten Seiten."""
+    async def sag(text: str) -> None:
+        if melden:
+            ergebnis = melden(text)
+            if asyncio.iscoroutine(ergebnis):
+                await ergebnis
+
+    jahr = datetime.date.today().year
+    alle: list[dict[str, Any]] = []
+    for nummer, thema in enumerate(plan.get("themen") or [], 1):
+        await sag(f"Recherche · {nummer} von {len(plan['themen'])} · {thema['name']}")
+        gefunden: list[dict[str, Any]] = []
+        treffer: list[dict[str, str]] = []
+        for anfrage in (thema["suche"], f"{thema['name']} {jahr}", thema["name"]):
+            treffer = [t for t in await asyncio.to_thread(suche, anfrage)
+                       if t.get("url") and not any(m in t["url"] for m in MEIDEN)][:5]
+            if not treffer:
+                continue
+            geladen = list(await seiten_laden(treffer[:3]) or []) if seiten_laden else []
+            texte = "\n\n".join(f"[{t['url']}]\n{t.get('title', '')}\n{t.get('snippet', '')}" for t in treffer)
+            texte += "\n\n" + "\n\n".join(f"[{g.get('url', '')}]\n{g.get('title', '')}\n{str(g.get('content') or '')[:4000]}"
+                                         for g in geladen)
+            gefunden = await eintraege_aus_texten(zugang, modell, thema, texte, [t["url"] for t in treffer], verbrauch)
+            if len(gefunden) >= 2:
+                break
+        await sag(f"{thema['name']}: {len(treffer)} Seiten gelesen, {len(gefunden)} Einträge")
+        alle += gefunden
+    return alle
+
+
+def daten_text(eintraege: list[dict[str, Any]]) -> str:
+    """Die recherchierten Daten für das Modell: verbindlich, mit Quelle und Stand."""
+    zeilen = [f"RECHERCHIERTE DATEN AUS DEM INTERNET (von JOSHI gelesen, Stand {stand()}) — verbindlich:"]
+    for thema in dict.fromkeys(e["thema"] for e in eintraege):
+        zeilen += ["", f"## {thema}"]
+        for e in (x for x in eintraege if x["thema"] == thema):
+            werte = "; ".join(f"{k}: {v}" for k, v in e["werte"].items())
+            zeilen.append(f"- {e['name']}" + (f" — {werte}" if werte else "") + f" (Quelle: {_host(e['quelle']) or '–'})")
+    zeilen += ["", "So nutzt du diese Daten:",
+               "- Übernimm diese Einträge mit genau diesen Angaben als Daten der Anwendung (ein Objekt/Array mit "
+               "Name, Feldern und Quelle). Bestehende Daten ergänzen, nicht ohne Auftrag löschen.",
+               "- Erfinde keine weiteren Einträge und keine Werte, die oben nicht stehen; fehlende Angaben leer lassen.",
+               f"- Zeige gut sichtbar „Daten Stand {stand()}“ und die Quellen."]
+    return "\n".join(zeilen)
+
+
+def daten_abgleich(html: str, eintraege: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(übernommen, fehlend): Steht jeder recherchierte Eintrag im Code der neuen Version?"""
+    klein = (html or "").lower()
+    drin = [e for e in eintraege if e["name"].lower() in klein]
+    return drin, [e for e in eintraege if e not in drin]
