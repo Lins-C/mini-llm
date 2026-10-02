@@ -45,7 +45,7 @@ Plane nur, was der Auftrag verlangt oder offensichtlich braucht. Keine Anmeldung
 
 BAU_REGELN = """Regeln für die Datei:
 1. Gib ausschließlich das HTML-Dokument aus: Es beginnt mit <!DOCTYPE html> und endet mit </html>. Kein Text davor oder danach, kein Markdown.
-2. Alles steckt in dieser einen Datei: CSS in <style>, JavaScript in einem <script> am Ende von <body>. Keine externen Dateien, keine CDNs, keine Webfonts, keine Frameworks, kein fetch oder sonstiger Netzwerkzugriff.
+2. Alles steckt in dieser einen Datei: CSS in <style>, JavaScript in einem <script> am Ende von <body>. Keine Webfonts, kein fetch oder sonstiger Netzwerkzugriff. Ausnahme Bibliotheken: Braucht die Anwendung wirklich eine (z. B. three.js für 3D, Chart.js für Diagramme), binde sie als klassisches Skript von cdn.jsdelivr.net ein, z. B. <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script> – JOSHI lädt sie und bettet sie ein, die fertige Datei läuft ohne Internet. Keine ES-Module (import … from 'https://…').
 3. Responsive: <meta name="viewport" content="width=device-width, initial-scale=1">, flexible Layouts mit max-width, Flexbox oder Grid mit Umbruch. Funktioniert ab 360 px Breite; keine festen Breiten über 100 %.
 4. Jedes Eingabefeld und jede Auswahl hat eine eindeutige id und ein sichtbares <label for="…">. Knöpfe sind <button type="button"> mit sichtbarer Beschriftung.
 5. Die Anwendung startet sofort sinnvoll: Startwerte oder Beispielwerte vorbelegen und das Ergebnis gleich beim Laden berechnen und anzeigen. Ergebnisse aktualisieren sich bei jeder Eingabe (input-Ereignis) oder per Knopf.

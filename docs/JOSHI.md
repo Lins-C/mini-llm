@@ -464,6 +464,20 @@ Position steht auch in den technischen Details. Gemessen an sechs PC-Teilen:
 10–15 s, 3–4 von 6 mit belastbarer Quelle — die Trefferlage von DuckDuckGo
 schwankt von Lauf zu Lauf. Tests: `tests/test_joshi_recherche.py`.
 
+### Bibliotheken: einbetten statt verbieten (`app/joshi/bibliotheken.py`, 02.10.2026)
+
+Ein Modell band für ein 3D-Sonnensystem three.js von cdn.jsdelivr.net ein; die Sandbox blockt
+das Netz, die Seite blieb schwarz, und beide Reparaturen schrieben dieselbe Einbindung erneut.
+Jetzt dürfen Anwendungen bekannte Bibliotheken als klassisches Skript von jsdelivr, unpkg oder
+cdnjs einbinden (Bauregel 2). JOSHI lädt sie beim Verbinden einmal herunter (nur JavaScript,
+höchstens 3 MB), legt sie unter `<Datenordner>/joshi-bibliotheken/` ab und ersetzt die
+Einbindung durch `<script data-joshi-bibliothek="…" data-quelle="…"></script>`. Vorschau,
+Prüfung, Export und Teilen betten den Code ein – die Datei läuft ohne Internet, der gespeicherte
+Code bleibt klein. Fehlt eine Bibliothek im Datenordner, lädt JOSHI sie über die Quelle nach.
+ES-Module (`import … from 'https://…'`) und andere Server bleiben blockiert.
+
+Nachgemessen: die zuvor schwarze v1 des 3D-Sonnensystems läuft fehlerfrei mit allen Planeten.
+
 ### Recherche für jeden Auftrag (`recherche.recherche_planen`, 02.10.2026)
 
 Mit eingeschaltetem **Web** plant JOSHI zuerst, welche Daten der Auftrag aus dem Netz braucht:

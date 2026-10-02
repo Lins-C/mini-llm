@@ -1689,6 +1689,13 @@ class Lauf:
     def verbinden(self, html: str, assets: dict[str, str]) -> tuple[str, list[str]]:
         """Deterministische Handgriffe, die kein Modell vergessen darf."""
         hinweise: list[str] = []
+        from app.joshi import bibliotheken
+
+        html, eingebunden, fehlgeschlagen = bibliotheken.einbinden(html)
+        if eingebunden:
+            hinweise.append(f"Bibliothek eingebettet: {', '.join(eingebunden)} — läuft ohne Internet")
+        if fehlgeschlagen:
+            hinweise.append(f"Bibliothek nicht ladbar: {', '.join(fehlgeschlagen)}")
         if not re.search(r"<meta[^>]+charset", html, re.IGNORECASE):
             html = re.sub(r"(<head\b[^>]*>)", r'\1<meta charset="utf-8">', html, count=1, flags=re.IGNORECASE)
         if not re.search(r"<meta[^>]+name=[\"']?viewport", html, re.IGNORECASE):

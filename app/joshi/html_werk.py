@@ -279,7 +279,9 @@ def laufzeit_dokument(
         f"<script>window.__JOSHI__={_json_im_skript(konfiguration)};</script>"
         f"<script>{LAUFZEIT_JS}</script>"
     )
-    return _einsetzen(assets_einsetzen(dokument, assets or {}), kopf)
+    from app.joshi import bibliotheken
+
+    return _einsetzen(assets_einsetzen(bibliotheken.einsetzen(dokument), assets or {}), kopf)
 
 
 def export_dokument(

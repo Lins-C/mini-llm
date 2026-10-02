@@ -48,6 +48,7 @@ Hintergrund, öffnet den Browser und zeigt beim ersten Mal die Zugangsdaten an.
   prüft sie gegen einen Abnahmevertrag und repariert gefundene Fehler selbst
 - Jede Änderung wird eine neue Version; „Rückgängig“ holt die vorige zurück
 - Große Änderungen in geprüften Schritten, große Anwendungen intern als Projektdateien
+- Bibliotheken wie three.js oder Chart.js bettet JOSHI selbst ein – die Anwendung läuft trotzdem ohne Internet
 - **Web-Schalter:** recherchiert vorab gezielt für den Auftrag – Produkte mit Preisen, Orte,
   Öffnungszeiten, Termine, Listen … – und baut die Daten mit Quelle in die Anwendung ein
 - Export als PNG/JPG, PDF (A4, eine Seite wenn möglich), Word; Teilen als HTML oder ZIP
