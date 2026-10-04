@@ -16,12 +16,13 @@ from __future__ import annotations
 import io
 import re
 import time
+from pathlib import Path
 from email.message import EmailMessage
 from typing import Any
 
 from app.exports import build_docx, safe_filename
 from app.joshi import renderer
-from app.joshi.html_werk import abschnitt_dokument, export_dokument, laufzeit_dokument
+from app.joshi.html_werk import abschnitt_dokument, braucht_ki, export_dokument, laufzeit_dokument
 
 FORMATE = {
     "html": "text/html; charset=utf-8",
@@ -283,8 +284,13 @@ def email(produkt: dict[str, Any], version: dict[str, Any], assets: dict[str, st
     nachricht["Subject"] = vorlage["betreff"]
     nachricht["X-Unsent"] = "1"
     nachricht.set_content(vorlage["text"])
-    nachricht.add_attachment(portables_html(produkt, version, assets), maintype="text", subtype="html",
-                             filename=dateiname(produkt, "html"))
+    if hat_ki(version):
+        # Mit KI-Funktion läuft die Anwendung beim Empfänger nur über die Startdatei.
+        nachricht.add_attachment(paket_zip(produkt, version, assets), maintype="application", subtype="zip",
+                                 filename=dateiname(produkt, "zip"))
+    else:
+        nachricht.add_attachment(portables_html(produkt, version, assets), maintype="text", subtype="html",
+                                 filename=dateiname(produkt, "html"))
     return bytes(nachricht), vorlage
 
 
@@ -309,4 +315,78 @@ def projekt_zip(ordner: "Path") -> bytes:
             for datei in sorted((ordner / bereich).rglob("*")) if (ordner / bereich).is_dir() else []:
                 if datei.is_file() and not datei.is_symlink():
                     archiv.write(datei, f"{ordner.name}/{datei.relative_to(ordner)}")
+    return puffer.getvalue()
+
+
+# ----------------------------------------------------------- Teilen als ZIP
+# Eine Anwendung mit KI-Funktion braucht beim Empfänger mehr als eine Datei:
+# Doppelgeklickt meldet sich die Seite bei Ollama mit Herkunft „null“ und wird
+# abgelehnt; über http://localhost lässt Ollama sie ab Werk zu. Das Paket
+# bringt deshalb einen winzigen lokalen Start mit (nur 127.0.0.1).
+PAKET = Path(__file__).with_name("paket")
+STARTDATEIEN = ("start.py", "Starten (Mac).command", "Starten (Windows).bat")
+
+
+def hat_ki(version: dict[str, Any]) -> bool:
+    return braucht_ki(version.get("html") or "")
+
+
+def liesmich(produkt: dict[str, Any], ki: bool) -> str:
+    titel = produkt.get("titel") or "JOSHI-Anwendung"
+    zeilen = [f"{titel}", "=" * len(titel), "", "Erstellt mit JOSHI · Mini LLM (powered by AI-Implements · C. Lins)", ""]
+    if ki:
+        zeilen += [
+            "Diese Anwendung enthält KI-Funktionen. Sie nutzt das KI-Modell auf DEINEM Rechner (Ollama).",
+            "",
+            "1. Ollama installieren und starten: https://ollama.com/download",
+            "2. Ein Modell laden: in der Ollama-App oder im Terminal mit  ollama pull <modellname>",
+            "3. ZIP entpacken und starten:",
+            "   Mac:     „Starten (Mac).command“ doppelklicken",
+            "            (beim ersten Mal: Rechtsklick → Öffnen → Öffnen)",
+            "   Windows: „Starten (Windows).bat“ doppelklicken",
+            "4. Der Browser öffnet die Anwendung. Vor der ersten KI-Anfrage fragt sie um Erlaubnis.",
+            "",
+            "Warum die Startdatei? Eine doppelgeklickte HTML-Datei lässt Ollama aus Sicherheitsgründen",
+            "nicht zu. Die Startdatei öffnet die Anwendung über http://localhost – nur auf diesem Rechner,",
+            "nichts geht ins Internet. Dafür wird Python 3 benötigt (Mac meist vorhanden).",
+            "",
+            "Ohne Ollama funktioniert alles außer den KI-Funktionen; index.html lässt sich dann auch direkt öffnen.",
+        ]
+    else:
+        zeilen += ["index.html im Browser öffnen – die Anwendung läuft ohne Internet."]
+    return "\n".join(zeilen) + "\n"
+
+
+def _ablegen(archiv: Any, pfad: str, daten: bytes, ausfuehrbar: bool = False) -> None:
+    import zipfile
+
+    info = zipfile.ZipInfo(pfad, time.localtime()[:6])
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = (0o100755 if ausfuehrbar else 0o100644) << 16
+    archiv.writestr(info, daten)
+
+
+def paket_zip(produkt: dict[str, Any], version: dict[str, Any], assets: dict[str, str],
+              ordner: "Path | None" = None) -> bytes:
+    """Anwendung als ZIP: index.html (+ Projektdateien) und bei KI-Funktion die Startdateien."""
+    import io
+    import zipfile
+
+    ki = hat_ki(version)
+    projekt = ordner is not None and (Path(ordner) / "index.html").is_file()
+    wurzel = Path(ordner).name if projekt else safe_filename(produkt.get("titel") or "JOSHI-Anwendung")
+    puffer = io.BytesIO()
+    with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as archiv:
+        if projekt:
+            with zipfile.ZipFile(io.BytesIO(projekt_zip(ordner))) as quelle:
+                for eintrag in quelle.infolist():
+                    teile = eintrag.filename.split("/", 1)
+                    if len(teile) == 2 and teile[1]:
+                        _ablegen(archiv, f"{wurzel}/{teile[1]}", quelle.read(eintrag))
+        else:
+            _ablegen(archiv, f"{wurzel}/index.html", portables_html(produkt, version, assets))
+        _ablegen(archiv, f"{wurzel}/LIESMICH.txt", liesmich(produkt, ki).encode("utf-8"))
+        if ki:
+            for name in STARTDATEIEN:
+                _ablegen(archiv, f"{wurzel}/{name}", (PAKET / name).read_bytes(), name.endswith(".command"))
     return puffer.getvalue()

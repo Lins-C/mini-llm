@@ -360,7 +360,7 @@
       ? Promise.resolve(gewuenscht)
       : holen(OLLAMA + "/api/tags").then(function (r) { return r.json(); }).then(function (d) {
           var m = (d.models || [])[0];
-          if (!m) throw new Error("In Ollama ist kein Modell installiert (z. B. „ollama pull gemma3:4b“).");
+          if (!m) throw new Error("In Ollama ist kein Modell installiert (in der Ollama-App).");
           return m.name || m.model;
         });
     return modellWahl.then(function (modell) {
@@ -376,10 +376,12 @@
     }).catch(function (fehler) {
       // Browser melden geöffnete Dateien mit der Herkunft „null“; die lässt
       // Ollama nur zu, wenn OLLAMA_ORIGINS sie ausdrücklich erlaubt.
-      return { ok: false, fehler: "Ollama ist nicht erreichbar oder lässt diese Datei nicht zu ("
-        + (fehler && fehler.message || fehler) + "). Läuft Ollama? Für geöffnete HTML-Dateien muss Ollama "
-        + "die Herkunft erlauben, z. B. einmalig: launchctl setenv OLLAMA_ORIGINS \"null\" und Ollama neu starten. "
-        + "In Mini LLM selbst funktioniert die Anwendung ohne diese Einstellung." };
+      var datei = location.protocol === "file:";
+      return { ok: false, fehler: datei
+        ? "Die KI-Funktion braucht das lokale Ollama und muss über die Startdatei geöffnet werden: "
+          + "„Starten (Mac).command“ bzw. „Starten (Windows).bat“ aus dem ZIP doppelklicken (siehe LIESMICH.txt)."
+        : "Ollama ist auf diesem Rechner nicht erreichbar (" + (fehler && fehler.message || fehler) + "). "
+          + "Läuft Ollama und ist ein Modell geladen (in der Ollama-App)?" };
     });
   }
 

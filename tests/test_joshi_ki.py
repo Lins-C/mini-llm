@@ -117,6 +117,42 @@ class EndpunktTests(unittest.TestCase):
         self.assertEqual(antwort, {"ok": True, "text": "Hallo Kadett.", "modell": "testmodell"})
 
 
+class PaketTests(unittest.TestCase):
+    """Teilen: Mit KI-Funktion kommt ein ZIP mit Startdatei, sonst wie bisher."""
+
+    def paket(self, html):
+        import io
+        import zipfile
+        from app.joshi import export
+
+        daten = export.paket_zip({"id": "p1", "titel": "Holodeck", "zustand": {}}, {"nummer": 1, "html": html}, {})
+        archiv = zipfile.ZipFile(io.BytesIO(daten))
+        return {i.filename: i for i in archiv.infolist()}, archiv
+
+    def test_ki_app_gets_start_files_and_readme(self):
+        eintraege, archiv = self.paket(HOLODECK)
+        self.assertEqual(set(eintraege), {"holodeck/index.html", "holodeck/LIESMICH.txt", "holodeck/start.py",
+                                          "holodeck/Starten (Mac).command", "holodeck/Starten (Windows).bat"})
+        self.assertEqual(eintraege["holodeck/Starten (Mac).command"].external_attr >> 16, 0o100755)
+        index = archiv.read("holodeck/index.html").decode()
+        self.assertIn(KI_VERBINDUNG, index)
+        self.assertIn("127.0.0.1", archiv.read("holodeck/start.py").decode())
+        self.assertIn("ollama pull", archiv.read("holodeck/LIESMICH.txt").decode())
+
+    def test_plain_app_has_no_start_files(self):
+        eintraege, _ = self.paket("<html><body><p>Rechner</p></body></html>")
+        self.assertEqual(set(eintraege), {"holodeck/index.html", "holodeck/LIESMICH.txt"})
+
+    def test_email_attaches_the_zip_for_ki_apps(self):
+        from email import message_from_bytes
+        from app.joshi import export
+
+        daten, _ = export.email({"id": "p1", "titel": "Holodeck", "zustand": {}}, {"nummer": 1, "html": HOLODECK},
+                                {}, None)
+        namen = [t.get_filename() for t in message_from_bytes(daten).walk() if t.get_filename()]
+        self.assertEqual(namen, ["holodeck.zip"])
+
+
 class AnfrageTests(unittest.TestCase):
     def test_messages_are_reduced_to_roles_and_text(self):
         aus = ki_nachrichten([{"role": "system", "content": "S"}, {"role": "tool", "content": "x"},

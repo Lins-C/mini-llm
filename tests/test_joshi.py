@@ -481,6 +481,8 @@ class BrueckeTests(unittest.TestCase):
 class ArchitekturTests(unittest.TestCase):
     def test_joshi_has_no_own_ollama_connection_and_no_model_names(self):
         for datei in (WURZEL / "app/joshi").rglob("*.py"):
+            if "paket" in datei.parts:   # Startdatei für Empfänger geteilter Anwendungen, kein JOSHI-Code
+                continue
             text = datei.read_text(encoding="utf-8")
             # Einzige Ausnahme: die Export-Richtlinie nennt das lokale Ollama als
             # erlaubtes Ziel — JOSHI selbst verbindet sich nie damit.

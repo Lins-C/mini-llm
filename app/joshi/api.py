@@ -445,6 +445,7 @@ async def produkt_lesen(request: Request, produkt_id: str) -> dict[str, Any]:
         "produkt": produkt,
         "versionen": versionen,
         "pruefung": pruefung,
+        "ki_funktion": export.hat_ki(gespeichert or {}) if aktuelle else False,
         "auftraege": [_job_fuer_ui(j) for j in jobs],
         "laufend": laufend.schnappschuss() if laufend else None,
         "bilder": [{k: b[k] for k in ("name", "datei", "mime", "groesse")}
@@ -577,10 +578,12 @@ async def exportieren(request: Request, produkt_id: str, format_: str, version: 
     breite = 390 if breite < 600 else 1280
     try:
         intern = (produkt.get("quelle") or {}).get("intern") or {}
-        if format_ == "html" and intern.get("zip") and gewaehlt["nummer"] == produkt["version"]:
-            # Gehören Daten- oder Mediendateien dazu, teilt JOSHI ein ZIP.
-            ordner = projektdateien.ordner(database.DATA_DIR, produkt)
-            daten = await asyncio.to_thread(export.projekt_zip, ordner)
+        # ZIP, wenn Daten-/Mediendateien dazugehören oder die Anwendung KI nutzt
+        # (dann mit Startdatei, siehe export.paket_zip) — oder wenn ausdrücklich gewünscht.
+        projektordner = (projektdateien.ordner(database.DATA_DIR, produkt)
+                         if intern.get("zip") and gewaehlt["nummer"] == produkt["version"] else None)
+        if format_ == "zip" or (format_ == "html" and (projektordner or export.hat_ki(gewaehlt))):
+            daten = await asyncio.to_thread(export.paket_zip, produkt, gewaehlt, assets, projektordner)
             return _download(daten, "zip", export.dateiname(produkt, "zip"))
         if format_ == "html":
             daten = export.portables_html(produkt, gewaehlt, assets)

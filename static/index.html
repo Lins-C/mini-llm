@@ -13,7 +13,7 @@
   <title>Mini LLM</title>
   <link rel="icon" type="image/png" href="/static/favicon.png?v=2">
   <link rel="apple-touch-icon" href="/static/logo-180.png?v=2">
-  <link rel="stylesheet" href="/static/styles.css?v=71">
+  <link rel="stylesheet" href="/static/styles.css?v=72">
 </head>
 <body>
   <div id="drop-overlay" class="drop-overlay" hidden>
@@ -667,6 +667,8 @@
             <input id="joshi-title" type="text" maxlength="80" aria-label="Name des Produkts" placeholder="Neues Produkt" disabled>
             <span id="joshi-version" class="joshi-pill" hidden></span>
             <span id="joshi-modus" class="joshi-modus" hidden></span>
+            <button id="joshi-ki-hinweis" class="joshi-modus joshi-ki-hinweis" type="button" hidden
+              title="Enthält KI-Funktion – Teilen per ZIP vorgesehen">🤖 KI-Funktion</button>
             <span id="joshi-state" class="joshi-state" hidden></span>
           </div>
           <div class="joshi-actions" id="joshi-actions">
@@ -690,6 +692,7 @@
               </button>
               <div class="joshi-menu-list" id="joshi-share-menu" hidden role="menu">
                 <button type="button" data-export="html" role="menuitem"><strong>HTML-Anwendung</strong><small id="joshi-share-html-info">Eine Datei, läuft überall – mit aktuellem Stand</small></button>
+                <button type="button" data-export="zip" role="menuitem"><strong>Als ZIP-Paket</strong><small id="joshi-share-zip-info">Anwendung mit allen nötigen Dateien</small></button>
                 <button type="button" data-export="png" role="menuitem"><strong>Als Bild</strong><small>Gesamtbild der Anwendung</small></button>
                 <button type="button" data-action="email" role="menuitem"><strong>E-Mail vorbereiten</strong><small>Text und Anwendung als Anhang</small></button>
               </div>
@@ -804,7 +807,7 @@
       <label class="joshi-field"><span>Text</span><textarea id="joshi-mail-text" rows="11"></textarea></label>
       <footer class="joshi-dialog-footer">
         <button id="joshi-mail-copy" type="button" class="secondary-button">Text kopieren</button>
-        <button id="joshi-mail-html" type="button" class="secondary-button">HTML-Datei laden</button>
+        <button id="joshi-mail-html" type="button" class="secondary-button">Anwendung laden</button>
         <button id="joshi-mail-eml" type="button" class="primary-button">Mail mit Anhang öffnen</button>
       </footer>
     </div>
@@ -857,7 +860,7 @@
 
   <script src="/static/app.js?v=64" defer></script>
   <script src="/static/modelle.js?v=1" defer></script>
-  <script src="/static/joshi.js?v=11" defer></script>
+  <script src="/static/joshi.js?v=12" defer></script>
   <a class="made-by" href="https://ai-implements.com" target="_blank" rel="noopener">made by AI-Implements</a>
 </body>
 </html>

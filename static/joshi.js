@@ -108,6 +108,7 @@
     codeKopieren: $$("#joshi-copy-code"),
     mail: $$("#joshi-mail-dialog"),
     modus: $$("#joshi-modus"),
+    kiHinweis: $$("#joshi-ki-hinweis"),
     empfehlung: $$("#joshi-empfehlung"),
     vorschlaege: $$("#joshi-vorschlaege"),
     eingabenAn: $$("#joshi-eingaben-an"),
@@ -914,10 +915,18 @@
     knoten.modus.title = intern.gross
       ? `Groß: ${Number(intern.zeichen || 0).toLocaleString("de-DE")} Zeichen – JOSHI arbeitet intern in Projektdateien`
       : "Eine einzelne, weitergebbare HTML-Datei";
+    const ki = Boolean(hatVersion && zustand.daten?.ki_funktion);
+    knoten.kiHinweis.hidden = !ki;
     const shareInfo = document.getElementById("joshi-share-html-info");
-    if (shareInfo) shareInfo.textContent = intern.zip
-      ? "ZIP mit HTML und den nötigen Dateien – mit aktuellem Stand"
-      : "Eine Datei, läuft überall – mit aktuellem Stand";
+    if (shareInfo) shareInfo.textContent = ki
+      ? "Enthält KI-Funktion – kommt als ZIP mit Startdatei"
+      : intern.zip
+        ? "ZIP mit HTML und den nötigen Dateien – mit aktuellem Stand"
+        : "Eine Datei, läuft überall – mit aktuellem Stand";
+    const zipInfo = document.getElementById("joshi-share-zip-info");
+    if (zipInfo) zipInfo.textContent = ki
+      ? "Mit Startdatei für Mac/Windows – KI über lokales Ollama"
+      : "Anwendung mit allen nötigen Dateien";
     knoten.workspaceAktion.textContent = projekt ? "Projektordner öffnen" : "In Workspace überführen";
     knoten.workspaceAktionInfo.textContent = projekt ? projekt.ordner : "Projektordner mit Dokumentation anlegen";
     zeichneWorkspaceInfo();
@@ -1494,7 +1503,8 @@
     if (!produkt?.version) return;
     schliesseMenues();
     await speichereZustandJetzt();
-    const namen = { png: "Bild", jpg: "Bild", pdf: "PDF", docx: "Word-Dokument", html: "HTML-Anwendung", eml: "E-Mail" };
+    const namen = { png: "Bild", jpg: "Bild", pdf: "PDF", docx: "Word-Dokument", html: "HTML-Anwendung", eml: "E-Mail",
+                    zip: "ZIP-Paket" };
     melde(`${namen[format]} wird erzeugt …`);
     const breite = zustand.geraet === "phone" ? 390 : 1280;
     try {
@@ -1928,6 +1938,10 @@
   knoten.mehrKnopf.addEventListener("click", () => umschalten(knoten.mehrKnopf, knoten.mehrMenue));
   ansicht.querySelectorAll("[data-export]").forEach((knopf) => knopf.addEventListener("click", () => exportiere(knopf.dataset.export)));
   ansicht.querySelector('[data-action="email"]').addEventListener("click", emailVorbereiten);
+  knoten.kiHinweis.addEventListener("click", () => melde(
+    "Enthält KI-Funktion: In Mini LLM nutzt die Anwendung dein gewähltes Modell (nach deiner Erlaubnis). "
+    + "Teilen ist per ZIP vorgesehen – darin liegt eine Startdatei, mit der die Anwendung beim Empfänger "
+    + "dessen lokales Ollama nutzt. Eine einzelne HTML-Datei könnte das nicht."));
   knoten.mehrMenue.querySelectorAll("[data-action]").forEach((knopf) => knopf.addEventListener("click", () => mehrAktion(knopf.dataset.action)));
   knoten.besprechen.addEventListener("click", imChatBesprechen);
   knoten.neuLaden.addEventListener("click", async () => {

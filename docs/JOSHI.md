@@ -892,12 +892,20 @@ Lösung öffnet das Netz **nicht** pauschal, sondern lässt Sicherheit und Anwen
 |---|---|
 | Vorschau in Mini LLM | `JOSHI.ki()` schickt die Anfrage per `postMessage` an Mini LLM. **Vor der ersten Anfrage fragt Mini LLM den Nutzer** (pro Produkt und Browser gemerkt). Der Server (`POST /api/joshi/produkte/{id}/ki`) nutzt dieselbe Modellschicht wie der Chat mit dem oben gewählten Modell. Die Anwendung sieht weder Ollama-Adresse noch Zugangsdaten. |
 | Prüfung (WebKit) | feste Testantwort (`{}` bei JSON) — die Abnahme läuft ohne Modell und ohne Netz. |
-| Export (HTML-Datei) | Richtlinie gibt **nur** `http://localhost:11434` frei, und nur wenn die Anwendung KI nutzt. Vor der ersten Anfrage fragt die Datei selbst nach. Hinweis: Browser melden geöffnete Dateien mit Herkunft `null`; Ollama erlaubt das nur mit `OLLAMA_ORIGINS="null"` — die Fehlermeldung nennt das. |
+| Export (ZIP mit Startdatei) | Richtlinie gibt **nur** `http://localhost:11434` frei, und nur wenn die Anwendung KI nutzt. Vor der ersten Anfrage fragt die Anwendung selbst nach. Doppelgeklickt (`file://`) verweist die Fehlermeldung auf die Startdatei. |
 
 Vorhandener Code, der `…:11434/api/generate`, `/api/chat` oder `…/chat/completions` per `fetch`
 aufruft, wird von der Laufzeit auf `JOSHI.ki()` umgeleitet und bekommt eine Antwort im jeweils
 erwarteten Format (auch Streaming als ein Stück). API-Schlüssel aus dem Frontend werden nie
 weitergeschickt. Grenzen pro Anfrage: 60 Nachrichten, 120.000 Zeichen, zwei gleichzeitig.
+
+**Teilen:** Eine Anwendung mit KI-Funktion trägt in der Kopfzeile den Hinweis-Button
+„🤖 KI-Funktion“ (Klick erklärt: Teilen per ZIP vorgesehen). „HTML-Anwendung“, „Als ZIP-Paket“
+und die E-Mail liefern dann ein ZIP (`export.paket_zip`): `index.html`, `LIESMICH.txt`,
+`start.py`, `Starten (Mac).command`, `Starten (Windows).bat`. Die Startdatei öffnet die Anwendung
+über `http://localhost:8790…` (nur 127.0.0.1) — diese Herkunft lässt Ollama ab Werk zu; eine
+doppelgeklickte Datei (Herkunft `null`) nicht. Gemessen 04.10.2026: entpacktes ZIP, `start.py`,
+`JOSHI.ki()` → Antwort vom lokalen Ollama.
 
 Bauregel 15 weist Modelle an, direkt `await window.JOSHI.ki({system, messages, format})` zu
 nutzen und keine Provider-Einstellungen oder Schlüssel zu bauen. Die statische Prüfung meldet
