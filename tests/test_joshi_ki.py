@@ -94,6 +94,29 @@ class FortsetzungTests(unittest.TestCase):
                          "<html><body><p>Hallo</p></body></html>")
 
 
+class EndpunktTests(unittest.TestCase):
+    """Fehler 04.10.2026: leeres Verbrauchsfeld → KeyError 'prompt_tokens' bei jeder Anfrage."""
+
+    def test_answer_comes_back_and_usage_is_booked(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from app.joshi import api
+
+        class Zugang:
+            async def strom(self, modell, nachrichten, *, temperatur, verbrauch):
+                verbrauch["prompt_tokens"] += 5          # wie die echte Modellschicht
+                verbrauch["completion_tokens"] += 2
+                yield {"text": "Hallo "}
+                yield {"text": "Kadett."}
+
+        anbindung = SimpleNamespace(nutzer=lambda r: {"id": "u1"}, zugang=Zugang())
+        with mock.patch.object(api, "_anbindung", anbindung), \
+                mock.patch.object(api, "_produkt_oder_404", return_value={"id": "p1"}):
+            antwort = asyncio.run(api.ki_aus_anwendung(None, "p1", {
+                "modell": "testmodell", "nachrichten": [{"role": "user", "content": "Hi"}]}))
+        self.assertEqual(antwort, {"ok": True, "text": "Hallo Kadett.", "modell": "testmodell"})
+
+
 class AnfrageTests(unittest.TestCase):
     def test_messages_are_reduced_to_roles_and_text(self):
         aus = ki_nachrichten([{"role": "system", "content": "S"}, {"role": "tool", "content": "x"},

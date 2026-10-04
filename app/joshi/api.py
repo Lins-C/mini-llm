@@ -693,7 +693,8 @@ async def ki_aus_anwendung(request: Request, produkt_id: str, daten: dict[str, A
     _laufende_ki[user["id"]] = _laufende_ki.get(user["id"], 0) + 1
     teile: list[str] = []
     try:
-        async for stueck in _a().zugang.strom(modell, nachrichten, temperatur=temperatur, verbrauch={}):
+        verbrauch = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0, "eval_duration_ns": 0, "timed_calls": 0}
+        async for stueck in _a().zugang.strom(modell, nachrichten, temperatur=temperatur, verbrauch=verbrauch):
             if stueck.get("text"):
                 teile.append(stueck["text"])
                 if sum(map(len, teile)) > KI_MAX_ANTWORT:
