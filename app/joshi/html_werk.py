@@ -37,6 +37,21 @@ SICHERHEITSRICHTLINIE = "; ".join((
     "form-action 'none'",
 ))
 
+# Braucht eine Anwendung ein Sprachmodell, gibt der Export genau eine Adresse
+# frei: das lokale Ollama des Rechners, auf dem die Datei geöffnet wird. Die
+# Anwendung fragt den Nutzer vor der ersten Anfrage (laufzeit.js).
+KI_VERBINDUNG = "connect-src http://localhost:11434 http://127.0.0.1:11434"
+_KI_NUTZUNG = re.compile(r"JOSHI\.ki\s*\(|:11434|/api/(?:generate|chat)\b|/chat/completions\b")
+
+
+def braucht_ki(dokument: str) -> bool:
+    return bool(_KI_NUTZUNG.search(dokument or ""))
+
+
+def mit_ki_verbindung(richtlinie: str) -> str:
+    return richtlinie.replace("connect-src 'none'", KI_VERBINDUNG)
+
+
 MAX_HTML_ZEICHEN = 600_000
 ASSET_VERWEIS = re.compile(r"joshi:(bild-\d{1,3})\b")
 _ANFANG = re.compile(r"<!doctype\s+html\b[^>]*>|<html\b[^>]*>", re.IGNORECASE)
@@ -297,6 +312,8 @@ def export_dokument(
     Im Workspace verweisen Bilder relativ auf `assets/`; dafür darf `richtlinie`
     zusätzlich Bilder aus der eigenen Datei-Herkunft erlauben — Netz bleibt gesperrt.
     """
+    if braucht_ki(dokument):
+        richtlinie = mit_ki_verbindung(richtlinie)
     daten = f'<script type="application/json" id="joshi-daten">{_json_im_skript({**meta, "zustand": zustand or {}})}</script>'
     generator = '<meta name="generator" content="JOSHI · Mini LLM">'
     return laufzeit_dokument(
@@ -342,6 +359,8 @@ _EXTERN_SKRIPT = re.compile(r"<script\b[^>]*\bsrc\s*=\s*[\"']?\s*(?:https?:)?//(
 _EXTERN_STIL = re.compile(r"<link\b[^>]*\bhref\s*=\s*[\"']?\s*(?:https?:)?//([^\"'\s>]+)", re.IGNORECASE)
 _EXTERN_IMPORT = re.compile(r"@import\s+(?:url\()?[\"']?(?:https?:)?//([^\"')\s]+)", re.IGNORECASE)
 _NETZ = re.compile(r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(", re.IGNORECASE)
+_KI_ADRESSEN = re.compile(r"[\"'`][^\"'`]*(?::11434|/api/(?:generate|chat|tags)|/chat/completions)[^\"'`]*[\"'`]")
+_FREMDES_NETZ = re.compile(r"[\"'`]https?://(?!localhost|127\.0\.0\.1)[^\"'`\s]+[\"'`]")
 _DIALOG = re.compile(r"\b(?:alert|confirm|prompt)\s*\(")
 
 
@@ -387,9 +406,14 @@ def statische_befunde(dokument: str) -> list[Befund]:
                 f"Externes {was} //{adresse[:120]} wird blockiert. Ersetze es durch eigenen Code in der Datei "
                 "(Diagramme mit <svg> oder <canvas> selbst zeichnen).",
             ))
-    if _NETZ.search(dokument):
+    netz = _NETZ.search(dokument)
+    if netz and braucht_ki(dokument) and not _FREMDES_NETZ.search(_KI_ADRESSEN.sub("", dokument)):
+        befunde.append(Befund("info", "Die Anwendung nutzt ein KI-Sprachmodell; JOSHI fragt den Nutzer vorher um Erlaubnis.",
+                              "KI-Aufrufe (Ollama/OpenAI-Format) leitet die JOSHI-Laufzeit auf JOSHI.ki() um."))
+    elif netz:
         befunde.append(Befund("warnung", "Die Anwendung versucht Netzwerkzugriffe; die sind gesperrt.",
-                              "fetch/XMLHttpRequest ist blockiert (connect-src 'none')."))
+                              "fetch/XMLHttpRequest ist blockiert (connect-src 'none'). Für ein Sprachmodell "
+                              "window.JOSHI.ki({system, messages}) verwenden."))
     if _DIALOG.search(re.sub(r"<style\b.*?</style>", "", dokument, flags=re.DOTALL | re.IGNORECASE)):
         befunde.append(Befund("info", "Meldungsfenster (alert) werden im Seiteninhalt angezeigt.",
                               "alert/confirm/prompt verwendet"))

@@ -225,6 +225,7 @@
     }
     if (document.body) bauen(); else document.addEventListener("DOMContentLoaded", bauen, { once: true });
   }
+  var echtesBestaetigen = window.confirm ? window.confirm.bind(window) : null;
   window.alert = function (text) { dialoge.push(String(text).slice(0, 200)); zeigen(String(text)); };
   window.confirm = function (text) { dialoge.push(String(text).slice(0, 200)); return true; };
   window.prompt = function (text, vorgabe) { dialoge.push(String(text).slice(0, 200)); return vorgabe == null ? "" : String(vorgabe); };
@@ -302,14 +303,157 @@
   window.addEventListener("message", function (e) {
     if (e.source !== window.parent) return;
     var daten = e.data;
-    if (!daten || daten.joshi !== 1 || daten.art !== "export-antwort") return;
-    var erledigen = offeneAnfragen[daten.anfrage];
+    if (!daten || daten.joshi !== 1) return;
+    var offen = daten.art === "export-antwort" ? offeneAnfragen : daten.art === "ki-antwort" ? kiOffen : null;
+    var erledigen = offen && offen[daten.anfrage];
     if (!erledigen) return;
-    delete offeneAnfragen[daten.anfrage];
+    delete offen[daten.anfrage];
     erledigen(daten);
   });
 
-  window.JOSHI = { version: 1, formate: ERLAUBT.slice(), export: exportieren };
+  // ------------------------------------------------------- KI-Sprachmodell
+  // Anwendungen mit Figuren, Chats oder Geschichten brauchen ein Sprachmodell.
+  // Sie bekommen es über JOSHI, nie über eigene Netzwerkzugriffe:
+  //   var a = await window.JOSHI.ki({ system: "…", messages: [{ role: "user", content: "…" }] });
+  //   a.ok ? a.text : a.fehler
+  // Vorschau: Mini LLM fragt den Nutzer einmal um Erlaubnis und nutzt sein
+  // gewähltes Modell — Zugangsdaten bleiben auf dem Server.
+  // Prüfung: feste Testantwort, damit die Abnahme ohne Modell durchläuft.
+  // Export: direkt das lokale Ollama dieses Rechners (nach Rückfrage); die
+  // Sicherheitsrichtlinie gibt dafür nur localhost:11434 frei.
+  var kiOffen = {};
+  var OLLAMA = "http://localhost:11434";
+  var KI_ROLLEN = { system: 1, user: 1, assistant: 1 };
+
+  function kiNachrichten(auftrag) {
+    var liste = [];
+    if (auftrag.system) liste.push({ role: "system", content: String(auftrag.system) });
+    (Array.isArray(auftrag.messages) ? auftrag.messages : []).forEach(function (n) {
+      if (n && KI_ROLLEN[n.role] && n.content != null) {
+        liste.push({ role: n.role, content: typeof n.content === "string" ? n.content : JSON.stringify(n.content) });
+      }
+    });
+    if (auftrag.prompt) liste.push({ role: "user", content: String(auftrag.prompt) });
+    return liste.slice(-60);
+  }
+
+  function kiPruefantwort(auftrag) {
+    var json = auftrag.format === "json" || /\bjson\b/i.test(JSON.stringify(auftrag.messages || auftrag.prompt || "").slice(-2000));
+    return json ? "{}" : "Testantwort der JOSHI-Prüfung: Hier antwortet später das gewählte KI-Modell.";
+  }
+
+  function kiErlaubtExport() {
+    var schluessel = "joshi-ki-erlaubt:" + (K.schluessel || location.pathname);
+    try { if (localStorage.getItem(schluessel) === "ja") return true; } catch (e) {}
+    var ja = echtesBestaetigen ? echtesBestaetigen(
+      "Diese Anwendung möchte das lokale KI-Modell (Ollama) auf diesem Rechner nutzen.\n\n"
+      + "Es wird nur http://localhost:11434 angesprochen; nichts verlässt den Rechner. Erlauben?") : false;
+    if (ja) { try { localStorage.setItem(schluessel, "ja"); } catch (e) {} }
+    return ja;
+  }
+
+  function kiDirekt(auftrag, nachrichten) {
+    if (!kiErlaubtExport()) return Promise.resolve({ ok: false, fehler: "Die Nutzung des lokalen KI-Modells wurde nicht erlaubt." });
+    var holen = echtesHolen || window.fetch;
+    var gewuenscht = auftrag.model || auftrag.modell;
+    var modellWahl = gewuenscht && gewuenscht !== "joshi"
+      ? Promise.resolve(gewuenscht)
+      : holen(OLLAMA + "/api/tags").then(function (r) { return r.json(); }).then(function (d) {
+          var m = (d.models || [])[0];
+          if (!m) throw new Error("In Ollama ist kein Modell installiert (z. B. „ollama pull gemma3:4b“).");
+          return m.name || m.model;
+        });
+    return modellWahl.then(function (modell) {
+      return holen(OLLAMA + "/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modell, messages: nachrichten, stream: false,
+          format: auftrag.format === "json" ? "json" : undefined,
+          options: auftrag.temperature != null ? { temperature: auftrag.temperature } : undefined })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d.error) return { ok: false, fehler: String(d.error) };
+        return { ok: true, text: (d.message && d.message.content) || "", modell: modell };
+      });
+    }).catch(function (fehler) {
+      // Browser melden geöffnete Dateien mit der Herkunft „null“; die lässt
+      // Ollama nur zu, wenn OLLAMA_ORIGINS sie ausdrücklich erlaubt.
+      return { ok: false, fehler: "Ollama ist nicht erreichbar oder lässt diese Datei nicht zu ("
+        + (fehler && fehler.message || fehler) + "). Läuft Ollama? Für geöffnete HTML-Dateien muss Ollama "
+        + "die Herkunft erlauben, z. B. einmalig: launchctl setenv OLLAMA_ORIGINS \"null\" und Ollama neu starten. "
+        + "In Mini LLM selbst funktioniert die Anwendung ohne diese Einstellung." };
+    });
+  }
+
+  function ki(auftrag) {
+    auftrag = auftrag && typeof auftrag === "object" ? auftrag : { prompt: String(auftrag || "") };
+    var nachrichten = kiNachrichten(auftrag);
+    if (!nachrichten.length) return Promise.resolve({ ok: false, fehler: "Die KI-Anfrage ist leer." });
+    if (modus === "pruefung") return Promise.resolve({ ok: true, text: kiPruefantwort(auftrag), modell: "pruefung", test: true });
+    if (modus === "export") return kiDirekt(auftrag, nachrichten);
+    var anfrage = kennung();
+    return new Promise(function (fertig) {
+      var uhr = setTimeout(function () {
+        delete kiOffen[anfrage];
+        fertig({ ok: false, fehler: "Das KI-Modell hat nicht rechtzeitig geantwortet." });
+      }, 300000);
+      kiOffen[anfrage] = function (antwort) {
+        clearTimeout(uhr);
+        fertig(antwort.ok ? { ok: true, text: String(antwort.text || ""), modell: antwort.modell || "" }
+                          : { ok: false, fehler: antwort.fehler || "Das KI-Modell ist nicht erreichbar." });
+      };
+      melden("ki", { anfrage: anfrage, nachrichten: nachrichten, format: auftrag.format === "json" ? "json" : "",
+                     temperatur: typeof auftrag.temperature === "number" ? auftrag.temperature : null });
+    });
+  }
+
+  // Vorhandener Code spricht Ollama oder eine OpenAI-kompatible API oft direkt
+  // an. Diese Aufrufe leitet JOSHI auf ki() um — ohne API-Schlüssel, ohne Netz.
+  var echtesHolen = window.fetch ? window.fetch.bind(window) : null;
+  function kiZiel(adresse) {
+    var u;
+    try { u = new URL(String(adresse), location.href); } catch (e) { return null; }
+    var lokal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/.test(u.hostname) && u.port === "11434";
+    if (/\/api\/tags$/.test(u.pathname) && lokal) return { art: "tags", lokal: true };
+    if (/\/api\/(generate|chat)$/.test(u.pathname)) return { art: "ollama", lokal: lokal };
+    if (/\/chat\/completions$/.test(u.pathname)) return { art: "openai", lokal: lokal };
+    return null;
+  }
+  function antwort(daten, status, art) {
+    return new Response(art || JSON.stringify(daten), {
+      status: status || 200, headers: { "Content-Type": art ? "text/event-stream" : "application/json" } });
+  }
+  if (echtesHolen) {
+    window.fetch = function (adresse, optionen) {
+      var url = adresse && adresse.url ? adresse.url : adresse;
+      var treffer = kiZiel(url);
+      // Im Export spricht die Anwendung ihr lokales Ollama selbst an; nur fremde
+      // Anbieter werden dort auf das lokale Modell umgelenkt.
+      if (!treffer || (modus === "export" && treffer.lokal && treffer.art !== "openai")) return echtesHolen(adresse, optionen);
+      var ziel = treffer.art;
+      if (ziel === "tags") return Promise.resolve(antwort({ models: [{ name: "joshi", model: "joshi" }] }));
+      var koerper = {};
+      try { koerper = JSON.parse(optionen && optionen.body || "{}"); } catch (e) {}
+      var pfad = String(url);
+      var auftrag = { system: koerper.system, messages: koerper.messages, prompt: koerper.prompt,
+                      format: koerper.format === "json" || (koerper.response_format && koerper.response_format.type === "json_object") ? "json" : "",
+                      temperature: koerper.temperature != null ? koerper.temperature : koerper.options && koerper.options.temperature };
+      return ki(auftrag).then(function (a) {
+        if (!a.ok) return antwort({ error: a.fehler }, 503);
+        if (ziel === "openai") {
+          if (koerper.stream) {
+            return antwort(null, 200, "data: " + JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: a.text } }] })
+              + "\n\ndata: " + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }) + "\n\ndata: [DONE]\n\n");
+          }
+          return antwort({ object: "chat.completion", model: a.modell,
+                           choices: [{ index: 0, message: { role: "assistant", content: a.text }, finish_reason: "stop" }] });
+        }
+        return antwort(/\/api\/generate$/.test(pfad)
+          ? { model: a.modell, response: a.text, done: true }
+          : { model: a.modell, message: { role: "assistant", content: a.text }, done: true });
+      });
+    };
+  }
+
+  window.JOSHI = { version: 1, formate: ERLAUBT.slice(), export: exportieren, ki: ki };
   var druckenEcht = window.print ? window.print.bind(window) : null;
   if (modus !== "export") {
     // Ältere Anwendungen drucken selbst; im Sandkasten verpufft das. Daraus

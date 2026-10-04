@@ -998,6 +998,8 @@
       planeZustandSpeichern(daten.daten);
     } else if (daten.art === "export" && daten.daten && typeof daten.daten === "object") {
       exportWunsch(daten.daten);
+    } else if (daten.art === "ki" && daten.daten && typeof daten.daten === "object") {
+      kiWunsch(daten.daten);
     } else if (daten.art === "fehler" && daten.daten) {
       const text = String(daten.daten.text || "").slice(0, 400);
       if (!text || zustand.laufzeitFehler.includes(text)) return;
@@ -1379,6 +1381,54 @@
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30000);
     return link.download;
+  }
+
+  // ------------------------------------------------ KI-Wunsch der Anwendung
+  // Die Anwendung bekommt nie direkten Zugriff auf Modelle. Vor der ersten
+  // Anfrage fragt Mini LLM den Nutzer; die Antwort gilt pro Produkt und Browser.
+  const KI_GLEICHZEITIG = 2;
+  let laufendeKi = 0;
+  const kiAbgelehnt = new Set();
+
+  function kiAntwort(anfrage, ok, text = "", fehler = "", modellName = "") {
+    try {
+      knoten.rahmen.contentWindow?.postMessage(
+        { joshi: 1, art: "ki-antwort", anfrage, ok, text, fehler, modell: modellName }, "*");
+    } catch (versehen) { /* Rahmen ist weg */ }
+  }
+
+  function kiErlaubt(produkt, gewaehlt) {
+    const schluessel = `joshi-ki-erlaubt:${produkt.id}`;
+    try { if (localStorage.getItem(schluessel) === "ja") return true; } catch (versehen) { /* privat */ }
+    if (kiAbgelehnt.has(produkt.id)) return false;
+    const ja = window.confirm(
+      `„${produkt.titel || "Diese Anwendung"}“ möchte ein KI-Sprachmodell nutzen.\n\n`
+      + `Die Anfragen laufen über Mini LLM mit deinem gewählten Modell (${gewaehlt}). `
+      + "Die Anwendung bekommt nur die Antworten – keine Zugangsdaten, keinen direkten Netzzugriff.\n\nErlauben?");
+    if (!ja) { kiAbgelehnt.add(produkt.id); return false; }
+    try { localStorage.setItem(schluessel, "ja"); } catch (versehen) { /* privat */ }
+    return true;
+  }
+
+  async function kiWunsch(wunsch) {
+    const anfrage = String(wunsch.anfrage || "");
+    const produkt = zustand.daten?.produkt;
+    const gewaehlt = modell();
+    if (!produkt) return kiAntwort(anfrage, false, "", "Es ist keine Anwendung geöffnet.");
+    if (!gewaehlt) return kiAntwort(anfrage, false, "", "Bitte oben ein Modell wählen.");
+    if (!kiErlaubt(produkt, gewaehlt)) return kiAntwort(anfrage, false, "", "Die KI-Nutzung wurde nicht erlaubt.");
+    if (laufendeKi >= KI_GLEICHZEITIG) return kiAntwort(anfrage, false, "", "Es laufen schon KI-Anfragen – kurz warten.");
+    laufendeKi += 1;
+    try {
+      const daten = await hole(`/api/joshi/produkte/${encodeURIComponent(produkt.id)}/ki`, json("POST", {
+        modell: gewaehlt, nachrichten: wunsch.nachrichten, format: wunsch.format, temperatur: wunsch.temperatur,
+      }));
+      kiAntwort(anfrage, true, daten.text, "", daten.modell);
+    } catch (fehler) {
+      kiAntwort(anfrage, false, "", fehler.message);
+    } finally {
+      laufendeKi -= 1;
+    }
   }
 
   // ------------------------------------------- Exportwunsch aus der Anwendung

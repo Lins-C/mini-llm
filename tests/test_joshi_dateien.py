@@ -369,7 +369,7 @@ class OrdnerSicherheitTests(OrdnerTestfall):
         laufzeit = (ROOT / "app" / "joshi" / "laufzeit.js").read_text(encoding="utf-8")
         self.assertNotIn("workspace", laufzeit)
         self.assertNotIn("inbound", laufzeit)
-        self.assertIn('window.JOSHI = { version: 1, formate: ERLAUBT.slice(), export: exportieren }', laufzeit)
+        self.assertIn('window.JOSHI = { version: 1, formate: ERLAUBT.slice(), export: exportieren, ki: ki }', laufzeit)
 
     def test_the_settings_are_persistent_per_user(self):
         self.einstellen(workspace_an=True)

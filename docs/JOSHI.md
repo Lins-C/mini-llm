@@ -882,6 +882,27 @@ herunterladen“), genügt kein Knopf: Die Bedienprobe löst den Export wirklich
 aus, JOSHI erzeugt die Datei und prüft sie (PDF-Kopf, lesbares DOCX, Größe).
 Erst dann gilt das Kriterium als erfüllt.
 
+## KI-Sprachmodell in Anwendungen (`JOSHI.ki`)
+
+Anlass (03.10.2026): Ein Holodeck mit Diskurs- und Adventure-Modus sprach Ollama und eine
+OpenAI-kompatible API per `fetch` an und scheiterte im Export an `connect-src 'none'`. Die
+Lösung öffnet das Netz **nicht** pauschal, sondern lässt Sicherheit und Anwendung miteinander sprechen:
+
+| Wo | Was passiert |
+|---|---|
+| Vorschau in Mini LLM | `JOSHI.ki()` schickt die Anfrage per `postMessage` an Mini LLM. **Vor der ersten Anfrage fragt Mini LLM den Nutzer** (pro Produkt und Browser gemerkt). Der Server (`POST /api/joshi/produkte/{id}/ki`) nutzt dieselbe Modellschicht wie der Chat mit dem oben gewählten Modell. Die Anwendung sieht weder Ollama-Adresse noch Zugangsdaten. |
+| Prüfung (WebKit) | feste Testantwort (`{}` bei JSON) — die Abnahme läuft ohne Modell und ohne Netz. |
+| Export (HTML-Datei) | Richtlinie gibt **nur** `http://localhost:11434` frei, und nur wenn die Anwendung KI nutzt. Vor der ersten Anfrage fragt die Datei selbst nach. Hinweis: Browser melden geöffnete Dateien mit Herkunft `null`; Ollama erlaubt das nur mit `OLLAMA_ORIGINS="null"` — die Fehlermeldung nennt das. |
+
+Vorhandener Code, der `…:11434/api/generate`, `/api/chat` oder `…/chat/completions` per `fetch`
+aufruft, wird von der Laufzeit auf `JOSHI.ki()` umgeleitet und bekommt eine Antwort im jeweils
+erwarteten Format (auch Streaming als ein Stück). API-Schlüssel aus dem Frontend werden nie
+weitergeschickt. Grenzen pro Anfrage: 60 Nachrichten, 120.000 Zeichen, zwei gleichzeitig.
+
+Bauregel 15 weist Modelle an, direkt `await window.JOSHI.ki({system, messages, format})` zu
+nutzen und keine Provider-Einstellungen oder Schlüssel zu bauen. Die statische Prüfung meldet
+reine KI-Aufrufe als Info, andere Netzwerkzugriffe weiter als Warnung. Tests: `tests/test_joshi_ki.py`.
+
 ## Laufzeit, Sandbox, Zustand
 
 - **Vorschau:** `<iframe sandbox="allow-scripts">` ohne eigene Herkunft, mit

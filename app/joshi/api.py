@@ -652,6 +652,61 @@ async def export_aus_anwendung(request: Request, produkt_id: str, format_: str,
     return _download(inhalt, format_, name)
 
 
+# ------------------------------------------------- KI aus der Anwendung
+# Anwendungen mit Figuren, Chats oder Geschichten fragen über window.JOSHI.ki()
+# ein Sprachmodell an. Der Nutzer hat in der Oberfläche vorher zugestimmt; die
+# Anfrage läuft über dieselbe Modellschicht wie der Chat — die Anwendung sieht
+# weder Ollama-Adresse noch Zugangsdaten, nur die Antwort.
+KI_ROLLEN = {"system", "user", "assistant"}
+KI_MAX_NACHRICHTEN = 60
+KI_MAX_ZEICHEN = 120_000
+KI_GLEICHZEITIG = 2
+KI_MAX_ANTWORT = 40_000
+_laufende_ki: dict[str, int] = {}
+
+
+def ki_nachrichten(roh: Any) -> list[dict[str, str]]:
+    """Nur Rollen und Text, begrenzt — alles andere aus der Anwendung fällt weg."""
+    if not isinstance(roh, list) or not roh:
+        raise HTTPException(status_code=422, detail="Die KI-Anfrage ist leer.")
+    nachrichten = [{"role": str(n.get("role")), "content": str(n.get("content") or "")}
+                   for n in roh[-KI_MAX_NACHRICHTEN:] if isinstance(n, dict) and n.get("role") in KI_ROLLEN]
+    if not any(n["role"] == "user" for n in nachrichten):
+        raise HTTPException(status_code=422, detail="Die KI-Anfrage enthält keine Nutzernachricht.")
+    if sum(len(n["content"]) for n in nachrichten) > KI_MAX_ZEICHEN:
+        raise HTTPException(status_code=413, detail="Die KI-Anfrage ist zu lang.")
+    return nachrichten
+
+
+@router.post("/produkte/{produkt_id}/ki")
+async def ki_aus_anwendung(request: Request, produkt_id: str, daten: dict[str, Any]) -> dict[str, Any]:
+    user = _nutzer(request)
+    _produkt_oder_404(user["id"], produkt_id)
+    modell = _modell(str(daten.get("modell") or ""))
+    nachrichten = ki_nachrichten(daten.get("nachrichten"))
+    if daten.get("format") == "json":
+        nachrichten.insert(0, {"role": "system", "content": "Antworte ausschließlich mit gültigem JSON, ohne Erklärtext."})
+    temperatur = daten.get("temperatur")
+    temperatur = min(max(float(temperatur), 0.0), 1.5) if isinstance(temperatur, (int, float)) else 0.8
+    if _laufende_ki.get(user["id"], 0) >= KI_GLEICHZEITIG:
+        raise HTTPException(status_code=429, detail="Es laufen schon KI-Anfragen dieser Anwendung.")
+    _laufende_ki[user["id"]] = _laufende_ki.get(user["id"], 0) + 1
+    teile: list[str] = []
+    try:
+        async for stueck in _a().zugang.strom(modell, nachrichten, temperatur=temperatur, verbrauch={}):
+            if stueck.get("text"):
+                teile.append(stueck["text"])
+                if sum(map(len, teile)) > KI_MAX_ANTWORT:
+                    break
+    except Exception as fehler:  # Modellschicht liefert verständliche Meldungen
+        raise HTTPException(status_code=503, detail=str(fehler) or "Das KI-Modell ist nicht erreichbar.") from fehler
+    finally:
+        _laufende_ki[user["id"]] = max(0, _laufende_ki.get(user["id"], 1) - 1)
+        if not _laufende_ki[user["id"]]:
+            _laufende_ki.pop(user["id"], None)
+    return {"ok": True, "text": "".join(teile)[:KI_MAX_ANTWORT], "modell": modell}
+
+
 @router.get("/produkte/{produkt_id}/email")
 async def email_vorlage(request: Request, produkt_id: str) -> dict[str, str]:
     user = _nutzer(request)

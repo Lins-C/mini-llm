@@ -60,7 +60,11 @@ BAU_REGELN = """Regeln für die Datei:
     type ist "pdf", "docx", "png" oder "jpg"; target ist der CSS-Selektor des Bereichs, der ins Dokument soll.
     Die Antwort ist {ok: true, filename} oder {ok: false, error}; zeige danach kurz „PDF wurde erstellt“ bzw. den Fehler an.
 13. Mobile first: zuerst für 390 px gestalten (eine Spalte, volle Breite), größere Ansichten mit @media (min-width: …). Drag & Drop muss auch per Finger gehen: Pointer-Events (pointerdown/pointermove/pointerup, touch-action: none am Griff) statt nur HTML5-draggable — oder zusätzlich „Element antippen, dann Ziel antippen“.
-14. Auf- und zuklappbare Bereiche mit <details>/<summary> oder einem <button aria-expanded>; Knöpfe mit Symbol („i“, „×“) bekommen ein aria-label."""
+14. Auf- und zuklappbare Bereiche mit <details>/<summary> oder einem <button aria-expanded>; Knöpfe mit Symbol („i“, „×“) bekommen ein aria-label.
+15. Braucht die Anwendung ein KI-Sprachmodell (Chat, Figuren, Diskussionen, Geschichten, Texte erzeugen), nutze ausschließlich JOSHI:
+    const a = await window.JOSHI.ki({ system: "Du bist …", messages: [{ role: "user", content: "…" }], format: "json" /* optional */ });
+    Die Antwort ist {ok: true, text} oder {ok: false, fehler}; zeige während der Anfrage einen Ladehinweis und bei ok:false den Fehler im Seiteninhalt.
+    Kein eigenes fetch zu Ollama oder einem Anbieter, keine API-Schlüssel, keine Provider- oder Modelleinstellungen: JOSHI fragt den Nutzer um Erlaubnis und nutzt sein Modell (beim Export das lokale Ollama). Gesprächsverlauf und Simulationszustand hält die Anwendung selbst und schickt bei jeder Anfrage mit, was das Modell wissen muss."""
 
 BAUEN_SYSTEM = f"""Du bist JOSHI und baust aus einem Auftrag eine fertige, benutzbare Anwendung als EINE eigenständige HTML-Datei. Das Ergebnis wird sofort im Browser geöffnet, automatisch bedient und geprüft — es muss ohne Nacharbeit funktionieren.
 

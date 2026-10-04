@@ -482,6 +482,11 @@ class ArchitekturTests(unittest.TestCase):
     def test_joshi_has_no_own_ollama_connection_and_no_model_names(self):
         for datei in (WURZEL / "app/joshi").rglob("*.py"):
             text = datei.read_text(encoding="utf-8")
+            # Einzige Ausnahme: die Export-Richtlinie nennt das lokale Ollama als
+            # erlaubtes Ziel — JOSHI selbst verbindet sich nie damit.
+            text = text.replace('KI_VERBINDUNG = "connect-src http://localhost:11434 http://127.0.0.1:11434"', "")
+            text = re.sub(r"_KI_NUTZUNG = re\.compile\(.*\)\n", "", text)
+            text = re.sub(r"_KI_ADRESSEN = re\.compile\(.*\)\n", "", text)
             self.assertNotIn("11434", text, datei)
             self.assertNotIn("OLLAMA_URL", text, datei)
             self.assertNotIn("/api/chat", text, datei)
@@ -1267,7 +1272,7 @@ class ExportBrueckeEchtTests(unittest.TestCase):
         probe = "return JSON.stringify({schluessel: Object.keys(window.JOSHI).sort(), typ: typeof window.JOSHI.export});"
         messung = asyncio.run(renderer.rendern(
             html_werk.laufzeit_dokument(ANGEBOT_MIT_EXPORT, modus="pruefung"), probe=probe))
-        self.assertEqual(messung.probe["schluessel"], ["export", "formate", "version"])
+        self.assertEqual(messung.probe["schluessel"], ["export", "formate", "ki", "version"])
         self.assertEqual(messung.probe["typ"], "function")
 
     def test_an_unknown_target_fails_cleanly(self):
