@@ -56,7 +56,10 @@ MAX_HTML_ZEICHEN = 600_000
 ASSET_VERWEIS = re.compile(r"joshi:(bild-\d{1,3})\b")
 _ANFANG = re.compile(r"<!doctype\s+html\b[^>]*>|<html\b[^>]*>", re.IGNORECASE)
 _ENDE = re.compile(r"</html\s*>", re.IGNORECASE)
-_ZAUN = re.compile(r"```[a-zA-Z0-9_-]*[ \t]*\n?|```")
+# Nur ganze Zaunzeilen zählen: ``` mitten im Code (z. B. /```json/ in einem
+# regulären Ausdruck) gehört zum Programm und bleibt stehen.
+_ZAUN = re.compile(r"^[ \t]*```[a-zA-Z0-9_-]*[ \t]*$\n?", re.M)
+_ZAUN_SCHLUSS = re.compile(r"\n[ \t]*```[ \t]*\n")
 _FRAGMENT_START = re.compile(r"<(?:style|div|main|section|header|body|head|meta|title|form|h1|script|link)\b", re.IGNORECASE)
 
 
@@ -94,6 +97,29 @@ def html_aus_antwort(text: str, titel: str = "JOSHI-Produkt") -> Auszug:
         f"<title>{html_modul.escape(titel)}</title>\n</head>\n<body>\n{koerper}\n</body>\n</html>"
     )
     return Auszug(dokument, geschlossen, ["Das Modell lieferte nur ein Fragment; es wurde in ein Grundgerüst gesetzt."])
+
+
+def fortsetzung_anfuegen(bisher: str, weiter: str) -> str:
+    """Hängt die Fortsetzung einer abgeschnittenen Datei sauber an.
+
+    Gefunden am 04.10.2026 (Holodeck): Das Modell schrieb mitten in
+    `replace(/```json/…` einen Zaun, hielt den Codeblock für beendet und schrieb
+    Erklärtext. Die Fortsetzung begann die halbe Zeile neu — vorher landeten
+    Erklärtext und halbe Zeile mitten im Skript (SyntaxError beim Start).
+    - Alles ab einer schließenden Zaunzeile ist Erklärtext und fällt weg.
+    - Beginnt die Fortsetzung die angefangene letzte Zeile neu, ersetzt sie sie.
+    """
+    anfang = _ANFANG.search(bisher)
+    schluss = _ZAUN_SCHLUSS.search(bisher, anfang.end() if anfang else 0)
+    if schluss:
+        bisher = bisher[:schluss.start()]
+    weiter = re.sub(r"^\s*```[a-zA-Z]*[ \t]*\n?", "", weiter)
+    rest = bisher.rsplit("\n", 1)
+    angefangen = rest[-1].strip() if len(rest) == 2 else ""
+    erste = weiter.lstrip("\n").split("\n", 1)[0].strip()
+    if angefangen and erste.startswith(angefangen):
+        return rest[0] + "\n" + weiter.lstrip("\n")
+    return bisher + weiter
 
 
 def titel_aus_html(dokument: str) -> str:

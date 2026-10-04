@@ -41,6 +41,7 @@ from app.joshi.html_werk import (
     bloecke_einzeln,
     ersetzung_vorhanden,
     export_dokument,
+    fortsetzung_anfuegen,
     html_aus_antwort,
     json_aus_antwort,
     titel_aus_html,
@@ -568,8 +569,7 @@ class Lauf:
             )
             if gestuft and grenzen.ist_abgeschnitten(weiter_grund):
                 self._abgeschnittene_stufe_verwerfen(weiter, weiter_grund)
-            weiter = re.sub(r"^\s*```[a-zA-Z]*\s*\n?", "", weiter)
-            text = weiter if _ANFANG.search(weiter[:300]) else text + weiter
+            text = weiter if _ANFANG.search(weiter[:300]) else fortsetzung_anfuegen(text, weiter)
             auszug = html_aus_antwort(text, self.produkt["titel"])
         return auszug
 

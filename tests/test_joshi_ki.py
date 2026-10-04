@@ -17,7 +17,7 @@ from fastapi import HTTPException
 from app.joshi import renderer
 from app.joshi.api import ki_nachrichten
 from app.joshi.html_werk import (KI_VERBINDUNG, SICHERHEITSRICHTLINIE, braucht_ki, export_dokument,
-                                 laufzeit_dokument, statische_befunde)
+                                 fortsetzung_anfuegen, html_aus_antwort, laufzeit_dokument, statische_befunde)
 
 HOLODECK = """<!DOCTYPE html><html><head><title>Holodeck</title></head><body>
 <p id="a">…</p><p id="b">…</p><p id="c">…</p><p id="d">…</p>
@@ -65,6 +65,33 @@ class RichtlinieTests(unittest.TestCase):
         self.assertEqual(arten, {"info"})
         fremd = HOLODECK.replace("</script>", "fetch('https://tracker.example.com/x');</script>")
         self.assertIn("warnung", {b.art for b in statische_befunde(fremd) if "Netzwerk" in b.text})
+
+
+class FortsetzungTests(unittest.TestCase):
+    """Echter Fall 04.10.2026: Zaun mitten im Regex, Erklärtext, Fortsetzung mit halber Zeile."""
+    TEIL1 = ("<!DOCTYPE html><html><body><script>\nfunction extractJSON(text){\n"
+             "    var t = String(text).replace(/\n```\n### Holodeck-Interaktion\n\nDas Holodeck verbindet …\n---\n"
+             "**Optimierungshinweis:** Du kannst …")
+    TEIL2 = ("var t = String(text).replace(/```json/gi, '').replace(/```/g, '').trim();\n"
+             "    return t;\n}\n</script></body></html>")
+
+    def test_explanation_is_dropped_and_the_half_line_is_replaced(self):
+        text = fortsetzung_anfuegen(self.TEIL1, self.TEIL2)
+        auszug = html_aus_antwort(text)
+        self.assertTrue(auszug.vollstaendig)
+        self.assertNotIn("Holodeck-Interaktion", auszug.html)
+        self.assertNotIn("Optimierungshinweis", auszug.html)
+        self.assertEqual(auszug.html.count("var t = "), 1)
+        self.assertIn("replace(/```json/gi, '')", auszug.html)
+
+    def test_backticks_inside_code_survive_an_unfinished_answer(self):
+        auszug = html_aus_antwort("```html\n<!DOCTYPE html><html><body><script>var r = /```json/gi;\n")
+        self.assertIn("/```json/gi", auszug.html)
+        self.assertFalse(auszug.html.startswith("```"))
+
+    def test_normal_continuation_is_unchanged(self):
+        self.assertEqual(fortsetzung_anfuegen("<html><body><p>Hal", "lo</p></body></html>"),
+                         "<html><body><p>Hallo</p></body></html>")
 
 
 class AnfrageTests(unittest.TestCase):
