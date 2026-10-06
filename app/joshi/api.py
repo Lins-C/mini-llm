@@ -224,11 +224,16 @@ def _empfehlung(art: str, bedarf: projekt.Bedarf, workspace_aktiv: bool) -> dict
     }}
 
 
-def ablauf(ereignisse: list[dict[str, Any]]) -> dict[str, Any]:
+AKTIVE_STUFEN = {"generating", "connecting", "validating", "repairing"}
+
+
+def ablauf(ereignisse: list[dict[str, Any]], beendet: bool = False) -> dict[str, Any]:
     """Die Schritte eines Auftrags mit ihrem Endzustand — für die fertige Antwort.
 
     Gestufte Änderungen zeigen ihre Stufen, alle anderen die Phasen
     (Verstehen, Umsetzen, Prüfen …). So bleibt sichtbar, was JOSHI getan hat.
+    Ist der Auftrag beendet, läuft nichts mehr: Eine Stufe, die noch „wird
+    repariert …“ hieß, wurde abgebrochen (Fall 06.10.2026, Dienstfehler).
     """
     stufen: dict[int, dict[str, Any]] = {}
     phasen: dict[str, dict[str, Any]] = {}
@@ -245,6 +250,13 @@ def ablauf(ereignisse: list[dict[str, Any]]) -> dict[str, Any]:
                                                      "zustand": s.get("zustand", "planned"), "grund": ""}
         elif art == "stufe" and int(e.get("nummer") or 0) in stufen:
             stufen[int(e["nummer"])].update(zustand=e.get("zustand", ""), grund=str(e.get("grund") or "")[:200])
+    if beendet:
+        for stufe in stufen.values():
+            if stufe["zustand"] in AKTIVE_STUFEN:
+                stufe["zustand"] = "aborted"
+        for phase in phasen.values():
+            if phase["zustand"] == "aktiv":
+                phase["zustand"] = "fehler"
     return {"stufen": [stufen[n] for n in sorted(stufen)], "schritte": list(phasen.values())}
 
 
@@ -265,7 +277,7 @@ def _job_fuer_ui(job: dict[str, Any]) -> dict[str, Any]:
         "eingaben": eingabe.get("eingaben", []), "modus": eingabe.get("modus", ""),
         "aenderung": eingabe.get("aenderung", ""), "versuch": eingabe.get("versuch", 0),
         "erstellt": job["erstellt"], "beendet": job.get("beendet"),
-        "ablauf": ablauf(job.get("ereignisse") or []),
+        "ablauf": ablauf(job.get("ereignisse") or [], beendet=job["status"] not in speicher.AKTIVE_STATUS),
     }
 
 

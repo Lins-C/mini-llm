@@ -443,6 +443,48 @@ class AbschneidenUndPatchTests(HardeningTestfall):
         self.assertIn("TRUNCATED_STAGE", fall.exception.technik)
         self.assertEqual(zugang.geschlossen, 2)
 
+    def test_a_server_error_mid_stream_retries_the_step(self):
+        """Fall 06.10.2026: „Internal Server Error“ nach ≈3.270 Tokens brach den ganzen Auftrag ab."""
+        class Abbrechend(Skriptzugang):
+            async def strom(self, modell, nachrichten, *, temperatur, verbrauch):
+                eintrag = self.skript[0]
+                if isinstance(eintrag, Exception):
+                    self.skript.pop(0)
+                    yield {"text": "<!DOCTYPE html><html><body>halb"}
+                    raise eintrag
+                async for stueck in super().strom(modell, nachrichten, temperatur=temperatur, verbrauch=verbrauch):
+                    yield stueck
+
+        def neuer_lauf(zugang):
+            return pipeline.Lauf(Auftrag("j", "p", self.user), user_id=self.user, produkt={"id": "p", "titel": "T"},
+                                 art="aendern", eingabe=pipeline.Eingabe(text="x"), modell="m", zugang=zugang)
+
+        with patch.object(pipeline, "STROM_WIEDERHOLUNG", (0.0, 0.0)):
+            zugang = Abbrechend([RuntimeError("Ollama: Internal Server Error (ref: d81287dd)"), BMI])
+            text, grund = asyncio.run(neuer_lauf(zugang).generieren([{"role": "user", "content": "x"}], "t"))
+            self.assertEqual((text, grund), (BMI, "stop"))
+            self.assertNotIn("halb", text)
+
+            # Limits und Anmeldefehler werden nicht wiederholt.
+            zugang = Abbrechend([RuntimeError("Das Nutzungslimit von Ollama Cloud ist erreicht."), BMI])
+            with self.assertRaises(RuntimeError):
+                asyncio.run(neuer_lauf(zugang).generieren([{"role": "user", "content": "x"}], "t"))
+
+            # Höchstens zwei neue Versuche, dann bleibt der Fehler sichtbar.
+            fehler = RuntimeError("Ollama: Internal Server Error")
+            zugang = Abbrechend([fehler, fehler, fehler, BMI])
+            with self.assertRaises(RuntimeError):
+                asyncio.run(neuer_lauf(zugang).generieren([{"role": "user", "content": "x"}], "t"))
+            self.assertEqual(zugang.skript, [BMI])
+
+    def test_a_finished_job_shows_no_stage_as_still_running(self):
+        """Fall 06.10.2026: Nach dem Abbruch stand Schritt 1 weiter auf „wird repariert …“."""
+        from app.joshi import api
+        ereignisse = [{"type": "stufen", "stufen": [{"nummer": 1, "titel": "A"}, {"nummer": 2, "titel": "B"}]},
+                      {"type": "stufe", "nummer": 1, "zustand": "repairing"}]
+        self.assertEqual([s["zustand"] for s in api.ablauf(ereignisse)["stufen"]], ["repairing", "planned"])
+        self.assertEqual([s["zustand"] for s in api.ablauf(ereignisse, beendet=True)["stufen"]], ["aborted", "planned"])
+
     def test_c_a_truncated_stage_repair_is_never_a_candidate(self):
         """Die Reparatur einer abgeschnittenen Stufe darf `length` nicht verschlucken."""
         produkt = self.produkt(BMI)

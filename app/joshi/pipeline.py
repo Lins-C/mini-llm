@@ -79,6 +79,27 @@ RETRY_HINWEIS = ("Schreib „versuch es erneut“ für einen weiteren Versuch mi
                  "oder „verwirf die Änderung“, um neu anzufangen.")
 
 
+# Fall 06.10.2026: Ollama Cloud meldete nach ≈3.270 Tokens „Internal Server
+# Error“ mitten im Strom. Die Modellschicht wiederholt nur vor dem ersten
+# Zeichen (sonst doppelter Text); JOSHI verwirft den halben Text und fordert
+# denselben Schritt neu an, statt den ganzen Auftrag abzubrechen.
+STROM_WIEDERHOLUNG = (5.0, 20.0)
+_VORUEBERGEHEND = re.compile(
+    r"internal server error|bad gateway|service unavailable|gateway time-?out|overloaded|"
+    r"\b50[0234]\b|vorzeitig beendet|brach mitten in der antwort ab|temporarily", re.IGNORECASE)
+
+
+def strom_fehler_voruebergehend(fehler: BaseException) -> bool:
+    """Nur echte, vorübergehende Dienstfehler der Modellschicht — keine eigenen
+    Grenzen (Umsetzungsfehler), keine Limits, keine Anmeldefehler."""
+    if type(fehler) is not RuntimeError:
+        return False
+    text = str(fehler)
+    if re.search(r"limit|kontingent|anmeld|drossel|429", text, re.IGNORECASE):
+        return False
+    return bool(_VORUEBERGEHEND.search(text))
+
+
 class Umsetzungsfehler(RuntimeError):
     def __init__(self, text: str, technik: str = "") -> None:
         super().__init__(text)
@@ -390,8 +411,21 @@ class Lauf:
         self._strombeginn = None
         try:
             stufe = f"Schritt {self.aktive_stufe['nummer']}" if self.aktive_stufe else ""
-            return await self._generieren(nachrichten, fortschritt, temperatur,
-                                          grenzen.Waechter(basis, bloecke=bloecke, grenzen=self.grenzen, stufe=stufe))
+            for versuch in range(len(STROM_WIEDERHOLUNG) + 1):
+                try:
+                    return await self._generieren(
+                        nachrichten, fortschritt, temperatur,
+                        grenzen.Waechter(basis, bloecke=bloecke, grenzen=self.grenzen, stufe=stufe))
+                except RuntimeError as fehler:
+                    if not strom_fehler_voruebergehend(fehler) or versuch >= len(STROM_WIEDERHOLUNG):
+                        raise
+                    await self.melde("hinweis", text="Der Modelldienst brach mitten in der Antwort ab "
+                                                     "– JOSHI fordert denselben Schritt neu an.")
+                    await self.technik(f"Strom abgebrochen ({str(fehler)[:160]}); "
+                                       f"neuer Versuch {versuch + 2} in {STROM_WIEDERHOLUNG[versuch]:.0f} s.")
+                    await asyncio.sleep(STROM_WIEDERHOLUNG[versuch])
+                    self.pruefe_abbruch()
+            raise AssertionError("unerreichbar")
         finally:
             gemeldet = (self.verbrauch["eval_duration_ns"] - dauer_vorher) / 1e9
             seit = time.monotonic() - self._strombeginn if self._strombeginn is not None else 0
