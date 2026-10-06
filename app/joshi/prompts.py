@@ -64,7 +64,7 @@ BAU_REGELN = """Regeln für die Datei:
 15. Braucht die Anwendung ein KI-Sprachmodell (Chat, Figuren, Diskussionen, Geschichten, Texte erzeugen), nutze ausschließlich JOSHI:
     const a = await window.JOSHI.ki({ system: "Du bist …", messages: [{ role: "user", content: "…" }], format: "json" /* optional */ });
     Die Antwort ist {ok: true, text} oder {ok: false, fehler}; zeige während der Anfrage einen Ladehinweis und bei ok:false den Fehler im Seiteninhalt.
-    Kein eigenes fetch zu Ollama oder einem Anbieter, keine API-Schlüssel, keine Provider- oder Modelleinstellungen: JOSHI fragt den Nutzer um Erlaubnis und nutzt sein Modell (beim Export das lokale Ollama). Gesprächsverlauf und Simulationszustand hält die Anwendung selbst und schickt bei jeder Anfrage mit, was das Modell wissen muss."""
+    Kein eigenes fetch zu Ollama oder einem Anbieter. Baue KEINE KI-Einstellungen: keine Provider- oder Modellauswahl, keine Basis-URL, keine API-Schlüssel, kein „Verbindung testen“ – solche Felder hätten keine Wirkung. JOSHI fragt den Nutzer um Erlaubnis, wählt das Modell und zeigt es selbst an. Gesprächsverlauf und Simulationszustand hält die Anwendung selbst und schickt bei jeder Anfrage mit, was das Modell wissen muss."""
 
 BAUEN_SYSTEM = f"""Du bist JOSHI und baust aus einem Auftrag eine fertige, benutzbare Anwendung als EINE eigenständige HTML-Datei. Das Ergebnis wird sofort im Browser geöffnet, automatisch bedient und geprüft — es muss ohne Nacharbeit funktionieren.
 

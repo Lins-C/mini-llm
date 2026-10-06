@@ -50,6 +50,11 @@ class RichtlinieTests(unittest.TestCase):
         self.assertIn("connect-src 'none'", ohne)
         self.assertNotIn("11434", ohne)
 
+    def test_charset_comes_first(self):
+        """Fund 06.10.2026: Laufzeit vor <meta charset> → geöffnete Datei als Windows-1252."""
+        html = export_dokument(HOLODECK, zustand={}, meta={"joshi": 1}).encode("utf-8")
+        self.assertIn(b'<meta charset="utf-8">', html[:1024])
+
     def test_preview_and_check_stay_without_network(self):
         for modus in ("vorschau", "pruefung"):
             self.assertIn("connect-src 'none'", laufzeit_dokument(HOLODECK, modus=modus))
@@ -151,6 +156,21 @@ class PaketTests(unittest.TestCase):
                                 {}, None)
         namen = [t.get_filename() for t in message_from_bytes(daten).walk() if t.get_filename()]
         self.assertEqual(namen, ["holodeck.zip"])
+
+
+class AttrappenTests(unittest.TestCase):
+    """Fall 06.10.2026: Holodeck mit „Modell wählen: Kompakt“ und API-Schlüssel-Feld ohne Wirkung."""
+
+    def test_own_ki_settings_are_an_error(self):
+        for markup in ('<label for="m">Modell wählen</label><select id="m"></select>',
+                       '<label>Provider wählen</label>', '<input id="k" placeholder="API-Schlüssel">'):
+            befunde = statische_befunde(HOLODECK.replace('<p id="a">', markup + '<p id="a">'))
+            self.assertIn("fehler", {b.art for b in befunde}, markup)
+
+    def test_no_false_alarm_without_ki_or_without_settings(self):
+        self.assertNotIn("fehler", {b.art for b in statische_befunde(HOLODECK)})
+        ohne_ki = '<html><body><label for="p">Provider</label><input id="p"></body></html>'
+        self.assertNotIn("fehler", {b.art for b in statische_befunde(ohne_ki)})
 
 
 class AnfrageTests(unittest.TestCase):

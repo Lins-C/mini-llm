@@ -342,46 +342,171 @@
     return json ? "{}" : "Testantwort der JOSHI-Prüfung: Hier antwortet später das gewählte KI-Modell.";
   }
 
-  function kiErlaubtExport() {
+  // Beim Empfänger: JOSHI wählt und zeigt das Modell selbst — die Anwendung
+  // baut keine eigene Modellauswahl (sonst Attrappe ohne Wirkung).
+  var KI_WAHL = "joshi-ki-modell";
+  function merken(schluessel, wert) { try { localStorage.setItem(schluessel, wert); } catch (e) {} }
+  function gemerkt(schluessel) { try { return localStorage.getItem(schluessel) || ""; } catch (e) { return ""; } }
+  function istCloud(name) { return /(^|[:-])cloud\b/.test(name); }
+
+  function installierteModelle() {
+    return (echtesHolen || window.fetch)(OLLAMA + "/api/tags").then(function (r) { return r.json(); })
+      .then(function (d) {
+        var namen = (d.models || []).map(function (m) { return m.name || m.model; }).filter(Boolean);
+        // Lokale Modelle zuerst: sie brauchen weder Konto noch Internet.
+        return namen.filter(function (n) { return !istCloud(n); }).concat(namen.filter(istCloud));
+      });
+  }
+
+  function modellBestimmen(gewuenscht) {
+    return installierteModelle().then(function (liste) {
+      if (!liste.length) throw new Error("In Ollama ist noch kein Modell geladen – bitte in der Ollama-App eins laden.");
+      var wahl = gemerkt(KI_WAHL);
+      if (wahl && liste.indexOf(wahl) >= 0) return wahl;
+      if (gewuenscht && liste.indexOf(gewuenscht) >= 0) return gewuenscht;
+      return liste[0];
+    });
+  }
+
+  function kiErlaubtExport(modell) {
     var schluessel = "joshi-ki-erlaubt:" + (K.schluessel || location.pathname);
-    try { if (localStorage.getItem(schluessel) === "ja") return true; } catch (e) {}
+    if (gemerkt(schluessel) === "ja") return true;
     var ja = echtesBestaetigen ? echtesBestaetigen(
-      "Diese Anwendung möchte das lokale KI-Modell (Ollama) auf diesem Rechner nutzen.\n\n"
-      + "Es wird nur http://localhost:11434 angesprochen; nichts verlässt den Rechner. Erlauben?") : false;
-    if (ja) { try { localStorage.setItem(schluessel, "ja"); } catch (e) {} }
+      "Diese Anwendung möchte das KI-Modell auf diesem Rechner nutzen (Ollama).\n\n"
+      + "Modell: " + modell + (istCloud(modell) ? " (Cloud-Modell von Ollama)" : " (läuft lokal)") + "\n"
+      + "Angesprochen wird nur http://localhost:11434. Das Modell lässt sich unten links jederzeit wechseln.\n\nErlauben?") : false;
+    if (ja) merken(schluessel, "ja");
     return ja;
   }
 
+  var plakette = null;
+  function plaketteZeigen(modell) {
+    if (!document.body) return;
+    if (!plakette) {
+      plakette = document.createElement("button");
+      plakette.type = "button";
+      plakette.title = "KI-Modell wechseln";
+      plakette.setAttribute("style", "position:fixed;left:12px;bottom:12px;z-index:2147483646;padding:5px 10px;"
+        + "border:1px solid rgba(127,127,127,.4);border-radius:999px;background:rgba(17,24,39,.88);color:#e5e7eb;"
+        + "font:12px/1.3 system-ui,-apple-system,sans-serif;cursor:pointer;max-width:70vw;overflow:hidden;"
+        + "text-overflow:ellipsis;white-space:nowrap;");
+      plakette.addEventListener("click", modellWaehlen);
+      document.body.appendChild(plakette);
+    }
+    plakette.textContent = "KI: " + modell + " ▾";
+  }
+
+  function modellWaehlen() {
+    installierteModelle().then(function (liste) {
+      var alt = document.getElementById("joshi-ki-wahl");
+      if (alt) { alt.remove(); return; }
+      var feld = document.createElement("select");
+      feld.id = "joshi-ki-wahl";
+      feld.setAttribute("aria-label", "KI-Modell");
+      feld.setAttribute("style", "position:fixed;left:12px;bottom:46px;z-index:2147483647;max-width:80vw;"
+        + "padding:6px;border-radius:8px;font:13px system-ui,-apple-system,sans-serif;");
+      feld.size = Math.min(8, Math.max(2, liste.length));
+      var aktiv = gemerkt(KI_WAHL);
+      liste.forEach(function (name) {
+        var option = document.createElement("option");
+        option.value = name;
+        option.textContent = name + (istCloud(name) ? "  (Cloud)" : "  (lokal)");
+        option.selected = name === aktiv;
+        feld.appendChild(option);
+      });
+      feld.addEventListener("change", function () {
+        merken(KI_WAHL, feld.value);
+        plaketteZeigen(feld.value);
+        zeigen("KI-Modell: " + feld.value);
+        feld.remove();
+      });
+      document.body.appendChild(feld);
+      feld.focus();
+    }).catch(function () { zeigen("Ollama ist nicht erreichbar."); });
+  }
+
+  // Direkt geöffnete Datei: Ollama lehnt die Herkunft „null“ ab. Einmal pro
+  // Seitenaufruf erklärt JOSHI die zwei Wege, mit Kopierknopf für den Befehl.
+  var anleitungGezeigt = false;
+  function dateiAnleitung() {
+    if (anleitungGezeigt || !document.body) return;
+    anleitungGezeigt = true;
+    var mac = /Mac/i.test(navigator.platform || navigator.userAgent);
+    var befehl = mac ? 'launchctl setenv OLLAMA_ORIGINS "null"' : "setx OLLAMA_ORIGINS null";
+    var kasten = document.createElement("div");
+    kasten.setAttribute("role", "dialog");
+    kasten.setAttribute("style", "position:fixed;inset:auto 12px 12px 12px;margin:auto;max-width:560px;z-index:2147483647;"
+      + "padding:16px 18px;border-radius:14px;background:#111827;color:#f3f4f6;box-shadow:0 12px 40px rgba(0,0,0,.45);"
+      + "font:14px/1.5 system-ui,-apple-system,sans-serif;");
+    function absatz(text, stil) {
+      var p = document.createElement("p");
+      p.textContent = text;
+      p.setAttribute("style", "margin:0 0 8px;" + (stil || ""));
+      kasten.appendChild(p);
+      return p;
+    }
+    absatz("KI-Funktion: So verbindest du die Anwendung mit Ollama", "font-weight:700;font-size:15px");
+    absatz("Diese Datei wurde direkt geöffnet. Aus Sicherheitsgründen lässt Ollama das ab Werk nicht zu.");
+    absatz("Empfohlen: Die Anwendung über „Starten (Mac).command“ bzw. „Starten (Windows).bat“ aus dem ZIP öffnen (siehe LIESMICH.txt).");
+    absatz("Oder einmalig Ollama für geöffnete Dateien freischalten – dann darf allerdings jede geöffnete HTML-Datei Ollama nutzen. "
+      + (mac ? "Befehl im Terminal ausführen, danach Ollama beenden und neu starten (gilt bis zum nächsten Neustart des Macs):"
+             : "Befehl in der Eingabeaufforderung ausführen, danach Ollama neu starten:"));
+    var code = absatz(befehl, "font-family:ui-monospace,Menlo,monospace;background:#1f2937;padding:8px 10px;border-radius:8px;user-select:all");
+    var zeile = document.createElement("div");
+    zeile.setAttribute("style", "display:flex;gap:8px;justify-content:flex-end;margin-top:6px");
+    function knopf(text, aktion) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.setAttribute("style", "padding:7px 12px;border-radius:8px;border:1px solid #4b5563;background:#1f2937;color:#f3f4f6;cursor:pointer;font:inherit");
+      b.addEventListener("click", aktion);
+      zeile.appendChild(b);
+    }
+    knopf("Befehl kopieren", function () {
+      var fertig = function () { zeigen("Befehl kopiert."); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(befehl).then(fertig, function () { auswaehlen(code); });
+      } else { auswaehlen(code); }
+    });
+    knopf("Schließen", function () { kasten.remove(); });
+    kasten.appendChild(zeile);
+    document.body.appendChild(kasten);
+  }
+  function auswaehlen(knoten) {
+    try {
+      var bereich = document.createRange();
+      bereich.selectNodeContents(knoten);
+      var auswahl = window.getSelection();
+      auswahl.removeAllRanges();
+      auswahl.addRange(bereich);
+      zeigen("Befehl markiert – mit Cmd/Strg+C kopieren.");
+    } catch (e) {}
+  }
+
   function kiDirekt(auftrag, nachrichten) {
-    if (!kiErlaubtExport()) return Promise.resolve({ ok: false, fehler: "Die Nutzung des lokalen KI-Modells wurde nicht erlaubt." });
     var holen = echtesHolen || window.fetch;
     var gewuenscht = auftrag.model || auftrag.modell;
-    var modellWahl = gewuenscht && gewuenscht !== "joshi"
-      ? Promise.resolve(gewuenscht)
-      : holen(OLLAMA + "/api/tags").then(function (r) { return r.json(); }).then(function (d) {
-          var m = (d.models || [])[0];
-          if (!m) throw new Error("In Ollama ist kein Modell installiert (in der Ollama-App).");
-          return m.name || m.model;
-        });
-    return modellWahl.then(function (modell) {
+    return modellBestimmen(gewuenscht === "joshi" ? "" : gewuenscht).then(function (modell) {
+      if (!kiErlaubtExport(modell)) return { ok: false, fehler: "Die Nutzung des KI-Modells wurde nicht erlaubt." };
+      plaketteZeigen(modell);
       return holen(OLLAMA + "/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: modell, messages: nachrichten, stream: false,
           format: auftrag.format === "json" ? "json" : undefined,
           options: auftrag.temperature != null ? { temperature: auftrag.temperature } : undefined })
       }).then(function (r) { return r.json(); }).then(function (d) {
-        if (d.error) return { ok: false, fehler: String(d.error) };
+        if (d.error) return { ok: false, fehler: String(d.error), modell: modell };
         return { ok: true, text: (d.message && d.message.content) || "", modell: modell };
       });
     }).catch(function (fehler) {
       // Browser melden geöffnete Dateien mit der Herkunft „null“; die lässt
       // Ollama nur zu, wenn OLLAMA_ORIGINS sie ausdrücklich erlaubt.
-      var datei = location.protocol === "file:";
-      return { ok: false, fehler: datei
-        ? "Die KI-Funktion braucht das lokale Ollama und muss über die Startdatei geöffnet werden: "
-          + "„Starten (Mac).command“ bzw. „Starten (Windows).bat“ aus dem ZIP doppelklicken (siehe LIESMICH.txt)."
-        : "Ollama ist auf diesem Rechner nicht erreichbar (" + (fehler && fehler.message || fehler) + "). "
-          + "Läuft Ollama und ist ein Modell geladen (in der Ollama-App)?" };
+      if (location.protocol === "file:" || location.origin === "null") {
+        dateiAnleitung();
+        return { ok: false, fehler: "Die KI-Funktion ist noch nicht mit Ollama verbunden – siehe Hinweis unten." };
+      }
+      return { ok: false, fehler: "Ollama ist auf diesem Rechner nicht erreichbar (" + (fehler && fehler.message || fehler) + "). "
+        + "Läuft Ollama und ist ein Modell geladen (in der Ollama-App)?" };
     });
   }
 
@@ -427,15 +552,16 @@
     window.fetch = function (adresse, optionen) {
       var url = adresse && adresse.url ? adresse.url : adresse;
       var treffer = kiZiel(url);
-      // Im Export spricht die Anwendung ihr lokales Ollama selbst an; nur fremde
-      // Anbieter werden dort auf das lokale Modell umgelenkt.
-      if (!treffer || (modus === "export" && treffer.lokal && treffer.art !== "openai")) return echtesHolen(adresse, optionen);
+      // Modellliste darf die Anwendung im Export echt lesen; Anfragen laufen immer
+      // über ki(), damit JOSHIs Modellwahl, Rückfrage und Anzeige gelten.
+      if (!treffer || (modus === "export" && treffer.art === "tags")) return echtesHolen(adresse, optionen);
       var ziel = treffer.art;
       if (ziel === "tags") return Promise.resolve(antwort({ models: [{ name: "joshi", model: "joshi" }] }));
       var koerper = {};
       try { koerper = JSON.parse(optionen && optionen.body || "{}"); } catch (e) {}
       var pfad = String(url);
       var auftrag = { system: koerper.system, messages: koerper.messages, prompt: koerper.prompt,
+                      model: treffer.art === "ollama" ? koerper.model : "",
                       format: koerper.format === "json" || (koerper.response_format && koerper.response_format.type === "json_object") ? "json" : "",
                       temperature: koerper.temperature != null ? koerper.temperature : koerper.options && koerper.options.temperature };
       return ki(auftrag).then(function (a) {

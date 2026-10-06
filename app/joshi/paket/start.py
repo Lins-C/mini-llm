@@ -32,6 +32,12 @@ def freier_port() -> int:
 
 
 class Leise(http.server.SimpleHTTPRequestHandler):
+    # Ohne Zeichensatz raten manche Browser Latin-1 – Umlaute würden verstümmelt.
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
+                      ".html": "text/html; charset=utf-8", ".txt": "text/plain; charset=utf-8",
+                      ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                      ".json": "application/json; charset=utf-8", ".csv": "text/csv; charset=utf-8"}
+
     def log_message(self, *args):
         pass
 

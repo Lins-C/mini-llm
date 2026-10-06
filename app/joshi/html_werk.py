@@ -314,7 +314,10 @@ def laufzeit_dokument(
 ) -> str:
     """Setzt Sicherheitsrichtlinie, Konfiguration und Laufzeit vor alles andere."""
     konfiguration = {"modus": modus, "zustand": zustand or {}, "schluessel": schluessel}
+    # Der Zeichensatz muss in den ersten 1024 Bytes stehen — vor Richtlinie und
+    # Laufzeit, sonst raten Browser bei geöffneten Dateien Windows-1252.
     kopf = (
+        '<meta charset="utf-8">'
         f'<meta http-equiv="Content-Security-Policy" content="{richtlinie}">'
         f"{zusatz_kopf}"
         f"<script>window.__JOSHI__={_json_im_skript(konfiguration)};</script>"
@@ -387,6 +390,12 @@ _EXTERN_IMPORT = re.compile(r"@import\s+(?:url\()?[\"']?(?:https?:)?//([^\"')\s]
 _NETZ = re.compile(r"\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(", re.IGNORECASE)
 _KI_ADRESSEN = re.compile(r"[\"'`][^\"'`]*(?::11434|/api/(?:generate|chat|tags)|/chat/completions)[^\"'`]*[\"'`]")
 _FREMDES_NETZ = re.compile(r"[\"'`]https?://(?!localhost|127\.0\.0\.1)[^\"'`\s]+[\"'`]")
+# Eigene KI-Einstellungen in einer Anwendung, die JOSHI.ki nutzt, sind Attrappen:
+# Modell und Zugang regelt JOSHI (Fall 06.10.2026: „Modell wählen: Kompakt“ ohne Wirkung).
+_KI_EINSTELLUNG = re.compile(
+    r"(?:<label\b[^>]*>|<legend\b[^>]*>|placeholder\s*=\s*[\"'])\s*[^<\"']{0,40}?"
+    r"\b(provider|anbieter|api[- ]?(?:key|schlüssel|schluessel)|basis-?url|base-?url|endpoint|"
+    r"modell\s*(?:wählen|waehlen|auswahl)|ki-modell)\b", re.IGNORECASE)
 _DIALOG = re.compile(r"\b(?:alert|confirm|prompt)\s*\(")
 
 
@@ -433,6 +442,13 @@ def statische_befunde(dokument: str) -> list[Befund]:
                 "(Diagramme mit <svg> oder <canvas> selbst zeichnen).",
             ))
     netz = _NETZ.search(dokument)
+    einstellung = _KI_EINSTELLUNG.search(dokument) if braucht_ki(dokument) else None
+    if einstellung:
+        befunde.append(Befund(
+            "fehler", "Die Anwendung baut eigene KI-Einstellungen (Provider, Modell oder API-Schlüssel), die nichts bewirken.",
+            f"Gefunden: „{einstellung.group(1)}“. Entferne Provider-/Modellauswahl, Basis-URL- und API-Schlüssel-Felder "
+            "samt „Verbindung testen“ vollständig. Modell, Zugang und Anzeige des aktiven Modells regelt JOSHI selbst; "
+            "die Anwendung ruft nur window.JOSHI.ki({system, messages}) auf."))
     if netz and braucht_ki(dokument) and not _FREMDES_NETZ.search(_KI_ADRESSEN.sub("", dokument)):
         befunde.append(Befund("info", "Die Anwendung nutzt ein KI-Sprachmodell; JOSHI fragt den Nutzer vorher um Erlaubnis.",
                               "KI-Aufrufe (Ollama/OpenAI-Format) leitet die JOSHI-Laufzeit auf JOSHI.ki() um."))
