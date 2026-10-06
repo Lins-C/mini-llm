@@ -201,18 +201,20 @@ class AenderungslinieTests(HardeningTestfall):
 
     def test_a_retry_keeps_all_seven_root_criteria(self):
         produkt = self.produkt()
-        erster = Skriptzugang([block("<h1>BMI-Rechner</h1>", "<h1>BMI-Rechner</h1><p>halb</p>")] * 3,
+        erster = Skriptzugang([block("<h1>BMI-Rechner</h1>", "<h1>BMI-Rechner</h1><p>halb</p>")] * 30,
                               vertrag=vertrag(7))
         _, nachher, _ = lauf(self.user, produkt, "aendern", erster, "Baue sieben Dinge ein",
                              pruefung=html_pruefung())
-        self.assertEqual(nachher["version"], 1)                    # gescheitert, v1 bleibt
+        # Ergebnisgarantie: läuft fehlerfrei, aber nichts nachgewiesen → Version 2 mit offenen Punkten.
+        self.assertEqual(nachher["version"], 2)
+        self.assertEqual(nachher["status"], "needs_attention")
         linie = speicher.offene_aenderung(produkt["id"])
         self.assertEqual(len(linie["vertrag"]["kriterien"]), 7)
         ids = [k["id"] for k in linie["vertrag"]["kriterien"]]
 
         # Der zweite Versuch: Das Modell würde jetzt einen Mini-Vertrag liefern —
         # darf aber gar nicht erst gefragt werden.
-        zweiter = Skriptzugang([block("<h1>BMI-Rechner</h1>", "<h1>BMI-Rechner</h1><p>wieder</p>")] * 3,
+        zweiter = Skriptzugang([block("<h1>BMI-Rechner</h1>", "<h1>BMI-Rechner</h1><p>wieder</p>")] * 30,
                                vertrag=vertrag(2, "mini"))
         _, nachher, ereignisse = lauf(self.user, produkt, "aendern", zweiter, "versuch es erneut es umzusetzten")
         self.assertEqual(zweiter.vertragsfragen, 0)
@@ -220,9 +222,10 @@ class AenderungslinieTests(HardeningTestfall):
         self.assertEqual([k["id"] for k in vertraege[-1]["vertrag"]["kriterien"]], ids)
         self.assertEqual(vertraege[-1]["versuch"], 2)
         # Das Modell bekam den ursprünglichen Auftrag, nicht „versuch es erneut“.
-        auftrag = zweiter.anfragen[0][-1]["content"]
+        # (Nach der Teilversion plant JOSHI die Schritte für die neue Basis neu —
+        # gesucht ist deshalb die erste Bauanfrage, nicht die Planungsanfrage.)
+        auftrag = next(a[-1]["content"] for a in zweiter.anfragen if "Versuch 2" in str(a[-1]["content"]))
         self.assertIn("Baue sieben Dinge ein", auftrag)
-        self.assertIn("Versuch 2", auftrag)
         linie = speicher.offene_aenderung(produkt["id"])
         self.assertEqual(len(linie["versuche"]), 2)
         self.assertEqual(linie["versuche"][1]["text"], "versuch es erneut es umzusetzten")
@@ -414,7 +417,7 @@ class AbschneidenUndPatchTests(HardeningTestfall):
         for version in speicher.versionen(produkt["id"]):
             self.assertNotIn("ABGESCHNITTEN", speicher.version(produkt["id"], version["nummer"])["html"])
         job = speicher.job(self.user, auftrag.job_id)
-        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["status"], "needs_attention")      # Version 1 bleibt, mit Begründung
         diagnose = job["ergebnis"]["diagnose"]
         self.assertEqual(diagnose["grund"], "length")
         self.assertEqual(diagnose["patch"]["status"], "abgeschnitten")
@@ -643,33 +646,87 @@ class GestufterModusTests(HardeningTestfall):
         self.assertEqual(endfassung["pruefung"]["abnahme"]["zaehlung"]["PASS"], 6)
         self.assertEqual(speicher.aenderungen(produkt["id"])[0]["status"], "umgesetzt")
 
-    def test_l_a_failing_later_stage_keeps_the_active_version_and_resumes(self):
+    def test_l_a_an_open_stage_does_not_stop_the_plan(self):
+        """Ergebnisgarantie (06.10.2026): Ein offener Schritt hält die übrigen nicht auf,
+        und am Ende steht eine fehlerfreie Version mit ehrlicher Liste des Offenen."""
         produkt = self.produkt()
         vertrag6 = vertrag(6)
         worte = [k["stichworte"][0] for k in vertrag6["kriterien"]]
-        # Schritt 1 gelingt, Schritt 2 bleibt zweimal ohne seine Stichworte.
-        antworten = self.stufen_antworten([f"{worte[0]} {worte[1]}", "nichts", "wieder nichts"])
+        # Schritt 1 gelingt, Schritt 2 bleibt zweimal ohne seine Stichworte, Schritt 3 gelingt.
+        antworten = self.stufen_antworten([f"{worte[0]} {worte[1]}", "nichts", "wieder nichts",
+                                           f"{worte[4]} {worte[5]}"] + ["immer noch nichts"] * 6)
         zugang = Skriptzugang(antworten, vertrag=vertrag6)
         auftrag, nachher, ereignisse = lauf(self.user, produkt, "aendern", zugang, TABELLE_WUNSCH)
-        self.assertEqual(nachher["version"], 1)
-        self.assertEqual(speicher.job(self.user, auftrag.job_id)["status"], "failed")
-        self.assertEqual(len(speicher.versionen(produkt["id"])), 1)       # kein halber Kandidat
-        linie = speicher.offene_aenderung(produkt["id"])
-        self.assertEqual(linie["checkpoint_stufe"], 1)
-        self.assertIn(worte[0], linie["checkpoint"])
-        fehler = [e for e in ereignisse if e["type"] == "fehler"][0]["text"]
-        self.assertIn("Schritt 2 von 3", fehler)
-        self.assertIn("versuch es erneut", fehler)
+        self.assertEqual(nachher["version"], 2)
+        job = speicher.job(self.user, auftrag.job_id)
+        self.assertEqual(job["status"], "needs_attention")
+        html = speicher.version(produkt["id"], 2)["html"]
+        for wort in (worte[0], worte[1], worte[4], worte[5]):
+            self.assertIn(wort, html)
+        hinweise = [e.get("text", "") for e in ereignisse if e["type"] == "hinweis"]
+        self.assertTrue(any("Schritt 2 von 3" in h and "übrigen Schritten weiter" in h for h in hinweise), hinweise)
+        self.assertFalse([e for e in ereignisse if e["type"] == "fehler"])
+        offen = " ".join(job["ergebnis"]["warnungen"])
+        self.assertIn(vertrag6["kriterien"][2]["beschreibung"], offen)
+        self.assertIn("versuch es erneut", job["ergebnis"]["text"])
 
-        # „versuch es erneut“ setzt bei Schritt 2 fort — Schritt 1 wird nicht neu geschrieben.
-        weiter = Skriptzugang(self.stufen_antworten([f"{worte[2]} {worte[3]}", f"{worte[4]} {worte[5]}"]))
-        _, nachher, ereignisse = lauf(self.user, produkt, "aendern", weiter, "versuch es erneut")
-        self.assertEqual(len(weiter.anfragen), 2)
-        self.assertTrue(any("bei Schritt 2 weiter" in e.get("text", "") for e in ereignisse if e["type"] == "hinweis"))
-        self.assertEqual(nachher["version"], 2)                            # der erste Lauf schrieb keinen Kandidaten
-        self.assertEqual([v["abgelehnt"] for v in speicher.versionen(produkt["id"])], [False, False])
-        for wort in worte:
-            self.assertIn(wort, speicher.version(produkt["id"], 2)["html"])
+    def test_l_b_a_broken_stage_is_never_taken_over(self):
+        """Ein Schritt, der die Anwendung beschädigt, wird verworfen — der Rest läuft weiter."""
+        produkt = self.produkt()
+        vertrag6 = vertrag(6)
+        worte = [k["stichworte"][0] for k in vertrag6["kriterien"]]
+
+        async def pruefen(html, **kwargs):
+            bericht = await html_pruefung()(html, **kwargs)
+            if "kaputt" in html:
+                bericht.befunde.append(Befund("fehler", "Skriptfehler beim Start", "ReferenceError"))
+            return bericht
+
+        # Schritt 1 beschädigt die Anwendung zweimal, Schritte 2 und 3 gelingen.
+        antworten = self.stufen_antworten(["kaputt", "kaputt", f"{worte[2]} {worte[3]}", f"{worte[4]} {worte[5]}"]
+                                          + ["nichts"] * 6)
+        zugang = Skriptzugang(antworten, vertrag=vertrag6)
+        auftrag, nachher, ereignisse = lauf(self.user, produkt, "aendern", zugang, TABELLE_WUNSCH, pruefung=pruefen)
+        self.assertEqual(nachher["version"], 2)
+        aktiv = speicher.version(produkt["id"], 2)["html"]
+        self.assertNotIn("kaputt", aktiv)
+        for wort in worte[2:]:
+            self.assertIn(wort, aktiv)
+        hinweise = [e.get("text", "") for e in ereignisse if e["type"] == "hinweis"]
+        self.assertTrue(any("Schritt 1 von 3" in h and "nichts davon wurde übernommen" in h for h in hinweise), hinweise)
+
+    def test_l_c_a_new_state_never_proves_less_than_the_active_version(self):
+        """Fortschrittssperre (06.10.2026, AI Escape v6: 2 statt 3 Punkte und trotzdem aktiv)."""
+        produkt = self.produkt()
+        aktiv = speicher.version(produkt["id"], 1)
+        pruefung = {**aktiv["pruefung"], "abnahme": {"ergebnisse": [
+            {"id": "k0", "pflicht": True, "status": "PASS", "beschreibung": "Die Anwendung zeigt Diagramm k0"},
+            {"id": "k1", "pflicht": True, "status": "FAIL", "beschreibung": "Die Anwendung zeigt Verlauf k1"}]}}
+        speicher.version_festschreiben(produkt["id"], aktiv["html"].replace("</h1>", "</h1><p>Diagramm</p>", 1),
+                                       "v2 mit Diagramm", pruefung=pruefung, aktivieren=True, status="needs_attention")
+        produkt = speicher.produkt(self.user, produkt["id"])
+        zugang = Skriptzugang([block("<p>Diagramm</p>", "<p>anders</p>")] + [block("<p>anders</p>", "<p>anders2</p>")] * 8,
+                              vertrag=vertrag(2))
+        auftrag, nachher, ereignisse = lauf(self.user, produkt, "aendern", zugang, "Zeige Diagramm und Verlauf")
+        self.assertEqual(nachher["version"], 2)                                   # die bessere bleibt aktiv
+        job = speicher.job(self.user, auftrag.job_id)
+        self.assertEqual(job["status"], "needs_attention")                        # Ergebnis, kein Scheitern
+        self.assertIn("Version 2 bleibt aktiv", job["ergebnis"]["text"])
+        self.assertTrue(speicher.version(produkt["id"], 3)["pruefung"]["abgelehnt"])
+        self.assertFalse([e for e in ereignisse if e["type"] == "fehler"])
+
+    def test_l_d_a_retry_plans_only_what_is_still_open(self):
+        produkt = self.produkt()
+        aktiv = speicher.version(produkt["id"], 1)
+        speicher.version_festschreiben(produkt["id"], aktiv["html"] + " ", "v2", pruefung={**aktiv["pruefung"], "abnahme": {
+            "ergebnisse": [{"id": "k0", "pflicht": True, "status": "PASS"}, {"id": "k1", "pflicht": True, "status": "FAIL"}]}},
+            aktivieren=True, status="needs_attention")
+        produkt = speicher.produkt(self.user, produkt["id"])
+        lauf_ = pipeline.Lauf(Auftrag("j", produkt["id"], self.user), user_id=self.user, produkt=produkt, art="aendern",
+                              eingabe=pipeline.Eingabe(text="x"), modell="m", zugang=Skriptzugang([]))
+        self.assertEqual([k["id"] for k in lauf_._noch_offen(vertrag(3))["kriterien"]], ["k1", "k2"])
+        # Ist alles nachgewiesen, bleibt der ganze Vertrag (nichts wird stillschweigend leer).
+        self.assertEqual(len(lauf_._noch_offen(vertrag(1))["kriterien"]), 1)
 
     def test_one_shot_truncation_switches_to_stages(self):
         produkt = self.produkt()
@@ -754,8 +811,8 @@ class AbbruchUndWaechterTests(HardeningTestfall):
         self.assertEqual(nachher["version"], 1)
         self.assertEqual(len(speicher.versionen(produkt["id"])), 1)
         job = speicher.job(self.user, auftrag.job_id)
-        self.assertEqual(job["status"], "failed")
-        self.assertIn("kontrolliert beendet", job["fehler"])
+        self.assertEqual(job["status"], "needs_attention")      # Version 1 bleibt, mit Begründung
+        self.assertIn("kontrolliert beendet", job["ergebnis"]["text"])
         self.assertTrue(any(s["stufe"] == "hart" for s in job["ergebnis"]["diagnose"]["signale"]))
         self.assertGreaterEqual(zugang.geschlossen, 1)
 

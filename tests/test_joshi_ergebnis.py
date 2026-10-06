@@ -1,0 +1,124 @@
+# Mini LLM – powered by AI-Implements · C. Lins
+# Copyright (c) 2026 C. Lins / AI-Implements – MIT-Lizenz, siehe LICENSE.
+# Dieser Code darf frei verwendet, verändert und erweitert werden.
+# Dieser Hinweis muss in allen Kopien und abgeleiteten Werken erhalten bleiben.
+"""Ergebnisgarantie und ehrliche Abnahme — die realen Fälle vom 06.10.2026.
+
+Kosmos 3D Explorer: Aus „der Mond umkreist die Sonne statt die Erde, korrigiere den
+kleinen Fehler“ wurde ein Vertrag, der den Fehler verlangte. Außerdem scheiterte die
+Abnahme an einer festen Uhrzeit im Szenario und an fehlenden Wörtern „Datum/Uhrzeit“,
+obwohl „06.10.2026 · 22:18:31“ angezeigt wurde.
+"""
+import asyncio
+import unittest
+
+from app.joshi import abnahme
+
+
+class Fehlerzugang:
+    """Antwortet auf die Gegenprobe wie ein Modell, das den Fehler erkennt."""
+
+    def __init__(self, antwort):
+        self.antwort = antwort
+        self.fragen = 0
+
+    async def strukturiert(self, modell, nachrichten, schema, *, temperatur, verbrauch):
+        self.fragen += 1
+        return self.antwort
+
+
+VERDREHT = {"kriterien": [
+    {"id": "mond_umkreist_sonne", "beschreibung": "In der Anwendung steht, dass der Mond die Sonne umkreist.",
+     "stichworte": ["Mond", "Sonne"], "pflicht": True, "nachweis": "inhalt"},
+    {"id": "ring_am_saturn", "beschreibung": "Der Ring ist am Saturn sichtbar.", "stichworte": ["Saturn", "Ring"],
+     "pflicht": True, "nachweis": "inhalt"},
+]}
+
+
+class GegenprobeTests(unittest.TestCase):
+    def test_a_bug_report_is_recognised(self):
+        self.assertTrue(abnahme.ist_fehlerbericht("der Mond umkreist die Sonne statt die Erde, korrigiere den Fehler"))
+        self.assertTrue(abnahme.ist_fehlerbericht("Der Saturn Ring ist fälschlich an der Sonne"))
+        self.assertFalse(abnahme.ist_fehlerbericht("Füge einen Dunkelmodus hinzu"))
+
+    def test_an_inverted_criterion_is_turned_around(self):
+        zugang = Fehlerzugang({"ergebnisse": [
+            {"id": "mond_umkreist_sonne", "richtung": "fehler", "beschreibung": "Der Mond umkreist die Erde.",
+             "stichworte": ["Mond", "Erde"]},
+            {"id": "ring_am_saturn", "richtung": "ziel"}]})
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            zugang, "m", wunsch="der Mond umkreist die Sonne statt die Erde, korrigiere den kleinen Fehler",
+            vertrag=VERDREHT, verbrauch={}))
+        self.assertTrue(vertrag["gegengeprueft"])
+        mond, ring = vertrag["kriterien"]
+        self.assertEqual(mond["beschreibung"], "Der Mond umkreist die Erde.")
+        self.assertEqual(mond["stichworte"], ["Mond", "Erde"])
+        self.assertIn("Sonne umkreist", mond["korrigiert_aus"])
+        self.assertEqual(ring["beschreibung"], "Der Ring ist am Saturn sichtbar.")
+        self.assertEqual(len(korrigiert), 1)
+
+    def test_an_answer_as_text_is_understood(self):
+        import json
+        zugang = Fehlerzugang(json.dumps({"ergebnisse": [
+            {"id": "mond_umkreist_sonne", "richtung": "fehler", "beschreibung": "Der Mond umkreist die Erde."}]}))
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            zugang, "m", wunsch="X statt Y, korrigiere den Fehler", vertrag=VERDREHT, verbrauch={}))
+        self.assertEqual(vertrag["kriterien"][0]["beschreibung"], "Der Mond umkreist die Erde.")
+        # Nackte Liste im Markdown-Zaun, mit „entfaellt“ — so antwortete glm am 06.10.2026.
+        zugang = Fehlerzugang('```json\n[{"id": "mond_umkreist_sonne", "richtung": "fehler", '
+                              '"beschreibung": "Der Mond umkreist die Erde."}, '
+                              '{"id": "ring_am_saturn", "richtung": "entfaellt"}]\n```')
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            zugang, "m", wunsch="X statt Y, korrigiere den Fehler", vertrag=VERDREHT, verbrauch={}))
+        self.assertEqual(vertrag["kriterien"][0]["beschreibung"], "Der Mond umkreist die Erde.")
+        self.assertTrue(vertrag["kriterien"][1]["entfallen"])
+        self.assertEqual(len(korrigiert), 2)
+        zugang = Fehlerzugang("kein json")
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            zugang, "m", wunsch="X statt Y, korrigiere den Fehler", vertrag=VERDREHT, verbrauch={}))
+        self.assertEqual(korrigiert, [])
+
+    def test_an_unrelated_criterion_is_never_turned(self):
+        zugang = Fehlerzugang({"ist": "Der Mond umkreist die Sonne", "soll": "Der Mond umkreist die Erde",
+                               "ergebnisse": [
+            {"id": "mond_umkreist_sonne", "richtung": "fehler", "beschreibung": "Der Mond umkreist die Erde."},
+            {"id": "ring_am_saturn", "richtung": "fehler", "beschreibung": "Der Ring ist nirgends."}]})
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            zugang, "m", wunsch="der Mond umkreist die Sonne statt die Erde, korrigiere", vertrag=VERDREHT, verbrauch={}))
+        self.assertEqual(vertrag["kriterien"][0]["beschreibung"], "Der Mond umkreist die Erde.")
+        self.assertEqual(vertrag["kriterien"][1]["beschreibung"], "Der Ring ist am Saturn sichtbar.")
+        self.assertEqual(len(korrigiert), 1)
+
+    def test_no_model_call_without_a_bug_report(self):
+        zugang = Fehlerzugang({"ergebnisse": []})
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            zugang, "m", wunsch="Füge einen Dunkelmodus hinzu", vertrag=VERDREHT, verbrauch={}))
+        self.assertEqual(zugang.fragen, 0)
+        self.assertEqual(korrigiert, [])
+        self.assertTrue(vertrag["gegengeprueft"])
+
+    def test_a_failing_model_changes_nothing(self):
+        class Kaputt:
+            async def strukturiert(self, *a, **k):
+                raise ValueError("kein JSON")
+
+        vertrag, korrigiert = asyncio.run(abnahme.vertrag_gegenpruefen(
+            Kaputt(), "m", wunsch="X statt Y, korrigiere", vertrag=VERDREHT, verbrauch={}))
+        self.assertEqual(vertrag, VERDREHT)
+        self.assertEqual(korrigiert, [])
+
+
+class DatumUhrzeitTests(unittest.TestCase):
+    def test_a_shown_date_and_time_count_as_keywords(self):
+        fundus = abnahme._fundus({"textauszug": "Kosmos 3D Explorer 06.10.2026 · 22:18:31 Erde"})
+        self.assertTrue(abnahme._treffer("Datum", fundus))
+        self.assertTrue(abnahme._treffer("Uhrzeit", fundus))
+
+    def test_no_date_no_marker(self):
+        fundus = abnahme._fundus({"textauszug": "Planeten 8 Monde 146"})
+        self.assertFalse(abnahme._treffer("Datum", fundus))
+        self.assertFalse(abnahme._treffer("Uhrzeit", fundus))
+
+
+if __name__ == "__main__":
+    unittest.main()

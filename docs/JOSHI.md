@@ -128,6 +128,37 @@ plausiblen Werten und klickt bis zu 30 Knöpfe, zerstörerische wie
 „Zurücksetzen“ oder „Export“ zuletzt. Als Reaktion zählen Text,
 Ausgabewerte, Canvas, SVG, Elementzahl und Klassen- bzw. ARIA-Zustände.
 
+## Ergebnisgarantie: immer ein Ergebnis, ehrlich begründet
+
+Seit 06.10.2026 endet ein Änderungsauftrag nicht mehr ohne Ergebnis, nur weil ein Punkt nicht
+nachweisbar war. Anlass: Kosmos 3D Explorer und AI Escape Deck brachen wiederholt ab.
+
+| Situation | Was JOSHI tut |
+|---|---|
+| Ein Schritt eines Stufenplans besteht die Prüfung nicht | Läuft er fehlerfrei, bleibt er drin („nicht nachgewiesen“); beschädigt er die App, wird er verworfen. **Die übrigen Schritte laufen weiter.** |
+| Am Ende sind Punkte offen | Jeder fehlerfreie, veränderte Stand wird aktiv („Mit Einschränkungen“), mit Liste „Offen: …“. „Rückgängig“ holt die vorige Version. |
+| Der neue Stand weist **weniger** nach als die aktive Version | Fortschrittssperre: Die bessere Version bleibt aktiv, der neue Stand liegt in der Versionsliste — Antwort mit Begründung, kein Scheitern. |
+| Modelldienst bricht mitten im Strom ab (500/502/503/504) | Derselbe Schritt wird bis zu zweimal neu angefordert; fällt der Dienst ganz aus, wird der letzte fehlerfreie Zwischenstand Ergebnis. |
+| Kein Schritt ließ sich ohne Schaden einbauen | Die aktive Version bleibt; die Antwort nennt je Schritt den Grund. |
+
+Nie aktiv wird ein Stand mit Skriptfehlern oder einer, der Inhalte verloren hat (`tragfaehig`).
+
+**Ehrliche Abnahme** — drei Messfehler, die echte Erfolge als „offen“ zählten:
+- *Verdrehte Fehlerberichte:* „X statt Y, korrigiere“ wurde als Wunsch nach X gelesen. Bei Fehlerberichten
+  schreibt das Modell erst IST und SOLL auf und ordnet dann jedes Kriterium ein (Gegenprobe, bei leerem
+  Ergebnis ein zweiter Durchgang; umgedreht wird nur, was mit dem IST zu tun hat). Bestehende Aufträge
+  werden beim nächsten Versuch einmal nachgeprüft; korrigierte Ziele bekommen einen neuen Stufenplan.
+- *Uhrzeiten im Szenario:* Erwartete Werte nahe „jetzt“ (Datum ±2 Tage, Uhrzeit ±3 h) gelten in jeder
+  gültigen Form — feste Termine bleiben exakt.
+- *Stichworte „Datum“/„Uhrzeit“:* Ein angezeigtes Datum (06.10.2026) oder eine Uhrzeit (22:18) zählt.
+
+Für Zufallsinhalte (Spiele mit neu erzeugter Mission) raten Szenarien keine Spielzüge; Bauregel 16 lässt
+Apps mit gewünschtem automatischem Durchlauf einen sichtbaren Knopf „Automatischen Durchlauf starten“ bekommen.
+
+Geprüft mit echten Läufen (`glm-5.3-flash:cloud`, Kopie der Live-Daten): Kosmos von „abgebrochen“ über
+3/6 auf 5/6 nachgewiesene Punkte; AI Escape liefert statt Abbruch eine Version mit Begründung.
+Tests: `tests/test_joshi_ergebnis.py`, `test_joshi_hardening.py` (`test_l_*`, Server-Fehler im Strom).
+
 ## Abnahme: drei Ebenen bis „bereit“
 
 Technisch lauffähig heißt nicht erfüllt. Eine Kandidatenversion wird erst

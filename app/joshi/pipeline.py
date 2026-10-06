@@ -100,6 +100,23 @@ def strom_fehler_voruebergehend(fehler: BaseException) -> bool:
     return bool(_VORUEBERGEHEND.search(text))
 
 
+def nachweis_vergleich(vorherige: dict[str, Any] | None, bericht: "pruefer.Pruefbericht") -> tuple[int, int]:
+    """Bestandene Pflichtpunkte (aktive Version, neuer Stand) — nur über dieselben Kriterien."""
+    jetzt = {e.get("id"): e for e in bericht.abnahme.get("ergebnisse") or [] if e.get("pflicht")}
+    vorher = {e.get("id"): e for e in (((vorherige or {}).get("pruefung") or {}).get("abnahme") or {}).get("ergebnisse") or []
+              if e.get("pflicht")}
+    gemeinsam = set(jetzt) & set(vorher)
+    return (sum(vorher[i].get("status") == "PASS" for i in gemeinsam),
+            sum(jetzt[i].get("status") == "PASS" for i in gemeinsam))
+
+
+def tragfaehig(bericht: "pruefer.Pruefbericht") -> bool:
+    """Läuft ohne Fehler und hat nichts verloren — darf als Ergebnis gelten,
+    auch wenn der Wunsch (noch) nicht nachgewiesen ist."""
+    return (not any(b.art == "fehler" for b in bericht.befunde)
+            and not any("kleiner als vorher" in b.text for b in bericht.befunde))
+
+
 class Umsetzungsfehler(RuntimeError):
     def __init__(self, text: str, technik: str = "") -> None:
         super().__init__(text)
@@ -232,6 +249,10 @@ class Lauf:
         self.gruende: list[str] = []
         self.reparaturen = 0
         self.vollstaendig = True
+        # Ergebnisgarantie: Schritte, die offen blieben (Titel, Grund), und der
+        # letzte fehlerfreie Zwischenstand einer gestuften Änderung.
+        self.offene_stufen: list[tuple[str, str]] = []
+        self.zwischenstand = ""
         self.szenarien: dict[str, dict[str, Any]] = {}
         self.stufe_text = ""
         self.letzte_abnahme: dict[str, int] = {}
@@ -673,14 +694,39 @@ class Lauf:
             await self.beenden_ohne_version(ende.text, vorher)
             return
         except Umsetzungsfehler as fehler:
-            await self.scheitern(fehler.text, fehler.technik, vorher)
+            if await self.retten(fehler.text, vorherige):
+                return
+            await self.scheitern(fehler.text, fehler.technik, vorher, ergebnis=bool(vorherige))
             return
         except RuntimeError as fehler:
             # Meldungen der Modellschicht sind bereits verständlich formuliert
             # (Nutzungslimit, Anmeldung, nicht erreichbar).
+            if await self.retten(str(fehler), vorherige):
+                return
             await self.scheitern(str(fehler), "", vorher)
             return
         await self.abschliessen(html, bericht, aenderungstext, vorherige)
+
+    async def retten(self, grund: str, vorherige: dict[str, Any] | None) -> bool:
+        """Ergebnisgarantie: Bricht eine gestufte Änderung später ab (Modelldienst,
+        Grenzen), wird der letzte fehlerfreie Zwischenstand trotzdem Ergebnis."""
+        if (self.art != "aendern" or not self.zwischenstand or not vorherige
+                or self.zwischenstand == vorherige.get("html")):
+            return False
+        await self.melde("hinweis", text="Der Rest der Änderung ließ sich nicht mehr umsetzen — JOSHI liefert den "
+                                         "letzten fehlerfreien Zwischenstand und sagt dir, was offen ist.")
+        self.offene_stufen.append(("Rest der Änderung", grund[:200]))
+        self.aktive_stufe = None
+        try:
+            html, bericht = await self.pruefen_und_reparieren(self.zwischenstand, True, [], max_reparaturen=0)
+        except Exception as fehler:  # noqa: BLE001 – dann bleibt es beim ehrlichen Scheitern
+            await self.technik(f"Zwischenstand nicht prüfbar: {fehler}")
+            return False
+        if not tragfaehig(bericht):
+            return False
+        text = (self.linie or {}).get("wunsch") or self.eingabe.text
+        await self.abschliessen(html, bericht, f"{text} (Zwischenstand)", vorherige)
+        return True
 
     async def abnahmevertrag(self, wunsch: str, melden: bool = True) -> dict[str, Any]:
         """Aus dem Änderungswunsch werden prüfbare Kriterien."""
@@ -690,6 +736,14 @@ class Lauf:
         ])
         vertrag = await self.gemessen(abnahme.vertrag_erzeugen(self.zugang, self.modell, wunsch=wunsch,
                                                                bestand=bestand, verbrauch=self.verbrauch))
+        try:
+            vertrag, korrigiert = await self.gemessen(abnahme.vertrag_gegenpruefen(
+                self.zugang, self.modell, wunsch=wunsch, vertrag=vertrag, verbrauch=self.verbrauch))
+        except Exception as fehler:  # noqa: BLE001 – Absicherung, darf den Auftrag nie stoppen
+            await self.technik(f"Gegenprobe übersprungen: {fehler}")
+            korrigiert = []
+        if korrigiert:
+            await self.technik("Gegenprobe Fehlerbericht: " + "; ".join(korrigiert))
         kriterien = vertrag.get("kriterien") or []
         if kriterien and melden:
             await self.technik("Abnahmekriterien: " + "; ".join(k["beschreibung"] for k in kriterien))
@@ -1082,6 +1136,7 @@ class Lauf:
     async def _linie_bereinigen(self, linie: dict[str, Any]) -> dict[str, Any]:
         """Ein früher als Ergänzung verbuchtes Zurückstellen wird nachträglich richtig verbucht."""
         linie = await self._ueberholte_nachpruefen(linie)
+        linie = await self._fehlerbericht_nachpruefen(linie)
         vertrag, korrekturen = aenderung.vertrag_bereinigen(linie)
         if not korrekturen:
             return linie
@@ -1096,6 +1151,31 @@ class Lauf:
             await self.melde("hinweis", text=("Deine Nachricht „…nutzt den Workspace“ war eine Anweisung an JOSHI, "
                                               "keine Anforderung an die Anwendung. Entfallen: " + "; ".join(entfallen)))
         return linie
+
+    async def _fehlerbericht_nachpruefen(self, linie: dict[str, Any]) -> dict[str, Any]:
+        """Ältere Linien: einmal prüfen, ob ein Fehlerbericht falsch herum verstanden wurde.
+
+        Wurde etwas korrigiert, passen Schrittplan und Checkpoint nicht mehr —
+        sie bauten auf dem verdrehten Ziel auf und werden verworfen.
+        """
+        vertrag = linie.get("vertrag") or {}
+        if vertrag.get("gegengeprueft") or not vertrag.get("kriterien"):
+            return linie
+        try:
+            vertrag, korrigiert = await self.gemessen(abnahme.vertrag_gegenpruefen(
+                self.zugang, self.modell, wunsch=aenderung.gesamtwunsch(linie), vertrag=vertrag,
+                verbrauch=self.verbrauch))
+        except Exception as fehler:  # noqa: BLE001 – Absicherung, darf den Auftrag nie stoppen
+            await self.technik(f"Gegenprobe übersprungen: {fehler}")
+            return linie
+        aenderungen: dict[str, Any] = {"vertrag": vertrag}
+        if korrigiert:
+            aenderungen.update(plan={}, checkpoint="", checkpoint_stufe=0)
+            await self.technik("Gegenprobe Fehlerbericht (bestehender Auftrag): " + "; ".join(korrigiert))
+            await self.melde("hinweis", text=(
+                "JOSHI hatte deinen Fehlerbericht falsch herum verstanden und korrigiert das Ziel: "
+                + "; ".join(korrigiert[:3]) + ". Die Schritte werden dafür neu geplant."))
+        return await asyncio.to_thread(speicher.aenderung_aendern, linie["id"], **aenderungen)
 
     async def _ueberholte_nachpruefen(self, linie: dict[str, Any]) -> dict[str, Any]:
         """Ältere Linien: Hat eine spätere Ergänzung frühere Kriterien überholt? Einmal je Ergänzung."""
@@ -1584,8 +1664,15 @@ class Lauf:
         plan = linie.get("plan") or {}
         if not plan.get("stufen"):
             await self.schritt("erstellen", "aktiv", "JOSHI plant die Schritte …")
+            # „versuch es erneut“ nach einer Teilversion: nur die Punkte planen, die die
+            # aktive Version noch nicht nachweist — die Endprüfung prüft weiterhin alle.
+            zu_planen = self._noch_offen(self.vertrag)
+            if len(zu_planen.get("kriterien") or []) < len(self.vertrag.get("kriterien") or []):
+                await self.melde("hinweis", text=(
+                    f"{len(self.vertrag['kriterien']) - len(zu_planen['kriterien'])} Punkte sind in deiner aktiven "
+                    f"Version schon nachgewiesen — JOSHI plant nur die {len(zu_planen['kriterien'])} offenen."))
             plan = await self.gemessen(aenderung.stufenplan_erzeugen(
-                self.zugang, self.modell, wunsch=aenderung.gesamtwunsch(linie), vertrag=self.vertrag,
+                self.zugang, self.modell, wunsch=aenderung.gesamtwunsch(linie), vertrag=zu_planen,
                 groesse=len(html_basis), verbrauch=self.verbrauch, max_stufen=self.grenzen.max_stufen))
             linie = await asyncio.to_thread(speicher.aenderung_aendern, linie["id"], plan=plan)
             self.linie = linie
@@ -1660,12 +1747,7 @@ class Lauf:
                         except Grenzfall as fall:
                             eintrag.setdefault("grenzfaelle", []).append({"art": fall.art, "technik": fall.technik[:240]})
                             if anlauf == 2:
-                                eintrag.update(ergebnis="gescheitert", grund=fall.technik[:300])
-                                await self.stufe_melden("failed", grund=fall.text[:200])
-                                raise Umsetzungsfehler(
-                                    f"Schritt {nummer} von {von} („{stufe['titel']}“) ließ sich nicht umsetzen: "
-                                    f"{fall.text}" + (f" Die Schritte 1–{index} sind gesichert." if index else ""),
-                                    fall.technik) from fall
+                                raise
                             grund = ("ließ sich nicht vollständig einarbeiten" if fall.art == "konflikt"
                                      else "endete am Ausgabelimit" if fall.art == "abgeschnitten"
                                      else "wurde zu umfangreich")
@@ -1674,6 +1756,13 @@ class Lauf:
                                 "versucht ihn einmal knapper; die Schritte davor bleiben gesichert."))
                             wunsch = wunsch + "\n\n" + prompts.STUFE_KNAPP
                             await self.stufe_melden("generating", zweiter_versuch=True)
+                except Grenzfall as fall:
+                    # Ergebnisgarantie: Ein Schritt, der sich nicht einarbeiten
+                    # lässt, hält die übrigen nicht auf. Nichts davon wird
+                    # übernommen; JOSHI macht mit dem nächsten Schritt weiter.
+                    eintrag.update(ergebnis="offen", grund=fall.technik[:300])
+                    await self.stufe_offen(stufe["titel"], nummer, von, fall.text, "failed")
+                    continue
                 finally:
                     self.baseline = baseline_vorher
                     eintrag["usage"] = self.usage_seit(vorher, beginn)
@@ -1692,14 +1781,24 @@ class Lauf:
                     bericht.befunde = [b for b in bericht.befunde if b.art != "abnahme"]
                     blockierend = []
                 if blockierend or not self.vollstaendig:
-                    eintrag.update(ergebnis="gescheitert",
-                                   grund=(blockierend[0].text if blockierend else "unvollständig")[:300])
-                    await self.stufe_melden("failed", grund=eintrag["grund"][:200])
-                    raise Umsetzungsfehler(
-                        f"Schritt {nummer} von {von} („{stufe['titel']}“) ließ sich nicht geprüft umsetzen. "
-                        + (f"Die Schritte 1–{index} sind gesichert." if index else ""),
-                        bericht.reparaturtext())
+                    grund = (blockierend[0].text if blockierend else "Die Datei blieb unvollständig.")[:300]
+                    await self.technik(f"Schritt {nummer} offen: {bericht.reparaturtext()[:600]}")
+                    if self.vollstaendig and tragfaehig(bericht) and neu != arbeit:
+                        # Läuft fehlerfrei, nur nicht nachgewiesen: übernehmen —
+                        # spätere Schritte und die Endprüfung bauen darauf auf.
+                        eintrag.update(ergebnis="nicht_nachgewiesen", grund=grund, zeichen=len(neu))
+                        arbeit, gliederung = neu, bericht.gliederung
+                        self.zwischenstand = arbeit
+                        await asyncio.to_thread(speicher.aenderung_aendern, linie["id"], checkpoint=neu,
+                                                checkpoint_stufe=nummer, checkpoint_basis=aktive,
+                                                checkpoint_gliederung=_gliederung_kompakt(gliederung))
+                        await self.stufe_offen(stufe["titel"], nummer, von, grund, "not_proven", uebernommen=True)
+                    else:
+                        eintrag.update(ergebnis="offen", grund=grund)
+                        await self.stufe_offen(stufe["titel"], nummer, von, grund, "failed")
+                    continue
                 arbeit, gliederung = neu, bericht.gliederung
+                self.zwischenstand = arbeit
                 unbewiesen = int((bericht.abnahme.get("zaehlung") or {}).get("NOT_PROVEN") or 0)
                 eintrag.update(ergebnis="bestanden", zeichen=len(neu), wie=wie, nicht_bewiesen=unbewiesen)
                 await asyncio.to_thread(speicher.aenderung_aendern, linie["id"], checkpoint=neu,
@@ -1716,8 +1815,34 @@ class Lauf:
         finally:
             self.aktive_stufe = None
         self.stufe_text = f"{von}/{von}"
-        await self.schritt("erstellen", "fertig", f"{von} Schritte umgesetzt und einzeln geprüft")
+        if arbeit == html_basis:
+            gruende = "; ".join(f"„{t}“: {g}" for t, g in self.offene_stufen[:4])
+            raise Umsetzungsfehler(
+                "Keiner der Schritte ließ sich einbauen, ohne die Anwendung zu beschädigen — deine aktive Version "
+                f"bleibt unverändert. Woran es lag: {gruende}", "Kein tragfähiger Zwischenstand")
+        offen = len(self.offene_stufen)
+        await self.schritt("erstellen", "fertig" if not offen else "fehler",
+                           f"{von - offen} von {von} Schritten geprüft umgesetzt" + (f", {offen} offen" if offen else ""))
         return arbeit, True
+
+    def _noch_offen(self, vertrag: dict[str, Any]) -> dict[str, Any]:
+        """Der Vertrag ohne die Kriterien, die die aktive Version schon nachweist."""
+        nummer = int(self.produkt.get("version") or 0)
+        aktiv = speicher.version(self.produkt["id"], nummer) if nummer else None
+        bestanden = {e.get("id") for e in (((aktiv or {}).get("pruefung") or {}).get("abnahme") or {}).get("ergebnisse") or []
+                     if e.get("status") == "PASS"}
+        offen = [k for k in vertrag.get("kriterien") or [] if k.get("id") not in bestanden]
+        return {**vertrag, "kriterien": offen} if offen else vertrag
+
+    async def stufe_offen(self, titel: str, nummer: int, von: int, grund: str, zustand: str,
+                          uebernommen: bool = False) -> None:
+        """Ein Schritt bleibt offen — gemeldet, vermerkt, und JOSHI macht weiter."""
+        self.offene_stufen.append((titel, grund))
+        await self.stufe_melden(zustand, grund=grund[:200])
+        await self.melde("hinweis", text=(
+            f"Schritt {nummer} von {von} („{titel}“) ließ sich nicht nachweisen"
+            + (" — er läuft fehlerfrei und bleibt drin." if uebernommen else " — nichts davon wurde übernommen.")
+            + (" JOSHI macht mit den übrigen Schritten weiter." if nummer < von else "")))
 
     # -------------------------------------------------------------- Prüfen
     def verbinden(self, html: str, assets: dict[str, str]) -> tuple[str, list[str]]:
@@ -2036,9 +2161,20 @@ class Lauf:
         ergebnisse = bericht.abnahme.get("ergebnisse") or []
         erfuellt = [e for e in ergebnisse if e.get("pflicht") and e.get("status") == "PASS"]
         pflicht = [e for e in ergebnisse if e.get("pflicht")]
-        teilweise = (not erstfassung and self.art == "aendern" and akzeptanz_luecke and bool(erfuellt)
-                     and not any(b.art == "fehler" for b in bericht.befunde)
-                     and not any("kleiner als vorher" in b.text for b in bericht.befunde))
+        # Ergebnisgarantie (06.10.2026): Jeder Kandidat, der fehlerfrei läuft,
+        # nichts verloren hat und sich von der aktiven Version unterscheidet,
+        # wird Ergebnis — auch wenn der Wunsch (noch) nicht nachgewiesen ist.
+        # Nie aktiv wird nur, was die Anwendung beschädigen würde.
+        geaendert = bool(vorherige) and html != vorherige.get("html")
+        teilweise = (not erstfassung and self.art == "aendern" and not bericht.ok and geaendert
+                     and tragfaehig(bericht))
+        # Fortschrittssperre: Ein neuer Stand darf nie weniger nachweisen als die aktive
+        # Version (06.10.2026: AI Escape v6 wies 2 statt 3 Punkte nach und wurde trotzdem aktiv).
+        vorher_bestanden, jetzt_bestanden = nachweis_vergleich(vorherige, bericht)
+        if teilweise and jetzt_bestanden < vorher_bestanden:
+            await self.ohne_fortschritt(html, bericht, aenderung_text, vorherige, pruefung,
+                                        vorher_bestanden, jetzt_bestanden)
+            return
         if not erstfassung and not bericht.ok and (vorher_ok or akzeptanz_luecke) and not teilweise:
             pruefung["abgelehnt"] = True
             nummer, _ = await asyncio.to_thread(
@@ -2051,7 +2187,8 @@ class Lauf:
                     f"Deine letzte funktionierende Version {vorherige['nummer']} bleibt aktiv.")
             await self.technik(f"Kandidat {nummer} abgelehnt: {bericht.kurzfassung()}")
             await self.scheitern(text, bericht.reparaturtext(), vorherige["nummer"],
-                                 warnungen=offen or [bericht.kurzfassung()], kandidat=nummer, bericht=bericht)
+                                 warnungen=offen or [bericht.kurzfassung()], kandidat=nummer, bericht=bericht,
+                                 ergebnis=True)
             return
         await self.schritt("teilbar", "aktiv", "Teilbare Fassung wird vorbereitet …")
         portabel = export_dokument(html, zustand=self.produkt.get("zustand"), assets=assets,
@@ -2071,11 +2208,18 @@ class Lauf:
         warnungen = [b.text for b in bericht.befunde if b.art in {"warnung", "luecke"}]
         if teilweise:
             offen = [e["beschreibung"] for e in pflicht if e.get("status") != "PASS"]
-            warnungen = [f"Offen: {o}" for o in offen] + warnungen
-            text = (f"Version {nummer} ist aktiv und funktioniert — teilweise umgesetzt: {len(erfuellt)} von "
-                    f"{len(pflicht)} Punkten nachgewiesen. Schreib „versuch es erneut“, dann holt JOSHI die "
-                    f"offenen {len(offen)} Punkte auf dieser Version nach. Version {vorherige['nummer']} "
-                    "bleibt in der Versionsliste.")
+            # Ein offener Schritt, dessen Grund schon als offener Punkt dasteht, wird nicht doppelt genannt.
+            schritte = [f"Schritt „{t}“: {g}" for t, g in self.offene_stufen
+                        if not any(o[:60] in g for o in offen)]
+            warnungen = [f"Offen: {o}" for o in offen] + [f"Offen – {x}" for x in schritte] + warnungen
+            if erfuellt:
+                text = (f"Version {nummer} ist aktiv und funktioniert — teilweise umgesetzt: {len(erfuellt)} von "
+                        f"{len(pflicht)} Punkten nachgewiesen.")
+            else:
+                text = (f"Version {nummer} ist aktiv und läuft fehlerfrei — JOSHI hat die Änderung eingebaut, "
+                        "konnte sie aber im Browser noch nicht nachweisen. Sieh sie dir bitte selbst an.")
+            text += (f" Schreib „versuch es erneut“, dann arbeitet JOSHI gezielt die offenen Punkte nach. "
+                     f"„Rückgängig“ holt Version {vorherige['nummer']} zurück.")
         elif bericht.ok:
             text = f"Version {nummer} ist bereit. {bericht.kurzfassung()}"
         else:
@@ -2090,6 +2234,37 @@ class Lauf:
         await self.tokenstand()
         await self.melde("fertig", **ergebnis, produkt=produkt, verbrauch=self.verbrauch)
         await self.status(status, text)
+
+    async def ohne_fortschritt(self, html: str, bericht: pruefer.Pruefbericht, aenderung_text: str,
+                               vorherige: dict[str, Any], pruefung: dict[str, Any], vorher: int, jetzt: int) -> None:
+        """Ergebnis ohne neue aktive Version: Der neue Stand läuft, weist aber weniger nach.
+
+        Kein Scheitern — eine ehrliche Antwort: Die bessere Version bleibt aktiv, der neue
+        Stand liegt in der Versionsliste, und es steht da, was offen ist und warum.
+        """
+        pruefung = {**pruefung, "abgelehnt": True, "diagnose": self.diagnose(False, bericht)}
+        nummer, _ = await asyncio.to_thread(
+            speicher.version_festschreiben, self.produkt["id"], html, aenderung_text,
+            zusammenfassung=bericht.kurzfassung(), pruefung=pruefung, modell=self.modell, aktivieren=False)
+        await self.versuch_abschliessen("abgelehnt", f"Version {nummer} weist weniger nach ({jetzt} statt {vorher})",
+                                        kandidat=nummer, bericht=bericht)
+        offen = [e["beschreibung"] for e in (bericht.abnahme.get("ergebnisse") or [])
+                 if e.get("pflicht") and e.get("status") != "PASS"]
+        text = (f"Version {vorherige['nummer']} bleibt aktiv — sie weist mehr nach ({vorher} Punkte) als der neue Stand "
+                f"({jetzt} Punkte). Der neue Stand läuft fehlerfrei und liegt als Version {nummer} in der Versionsliste. "
+                "Schreib „versuch es erneut“, dann arbeitet JOSHI gezielt die offenen Punkte nach.")
+        warnungen = [f"Offen: {o}" for o in offen] + [b.text for b in bericht.befunde if b.art in {"warnung", "luecke"}]
+        status = await asyncio.to_thread(speicher.status_fuer_version, self.produkt["id"], vorherige["nummer"])
+        produkt = await asyncio.to_thread(speicher.produkt_aendern, self.user_id, self.produkt["id"], status=status)
+        diagnose = self.diagnose(False, bericht)
+        await self.technik(self.diagnose_text(diagnose))
+        ergebnis = {"version": vorherige["nummer"], "status": "needs_attention", "text": text,
+                    "warnungen": warnungen[:6], "kandidat": nummer, "diagnose": diagnose}
+        await asyncio.to_thread(speicher.job_aendern, self.auftrag.job_id, status="needs_attention",
+                                ergebnis=ergebnis, verbrauch=self.verbrauch)
+        await self.tokenstand()
+        await self.melde("fertig", **ergebnis, produkt=produkt, verbrauch=self.verbrauch)
+        await self.status("needs_attention", text)
 
     async def arbeitsordner_sichern(self, nummer: int, html: str) -> None:
         """Jedes Produkt hat intern einen Arbeitsordner — ohne Schalter, ohne Rückfrage.
@@ -2158,9 +2333,15 @@ class Lauf:
 
     async def scheitern(self, text: str, technik: str, aktive_version: int,
                         warnungen: list[str] | None = None, kandidat: int = 0,
-                        bericht: pruefer.Pruefbericht | None = None) -> None:
+                        bericht: pruefer.Pruefbericht | None = None, ergebnis: bool = False) -> None:
+        """Kein neuer Stand. Mit `ergebnis` (es gibt eine aktive Version, JOSHI selbst kam
+        nicht weiter) ist das eine Antwort mit Begründung — „Mit Einschränkungen“, kein
+        Fehlschlag (Ergebnisgarantie, 06.10.2026). Ein echter Fehlschlag bleibt nur, wenn
+        der Modelldienst nicht verfügbar ist oder es noch gar keine Version gibt."""
         if technik:
             await self.technik(technik)
+        if ergebnis and aktive_version:
+            text = f"Version {aktive_version} bleibt aktiv. {text}"
         if self.art == "aendern" and self.linie:
             text = f"{text} {RETRY_HINWEIS}"
         aktiv = await asyncio.to_thread(speicher.produkt, self.user_id, self.produkt["id"])
@@ -2171,14 +2352,19 @@ class Lauf:
         await self.technik(self.diagnose_text(diagnose))
         await self.versuch_abschliessen("abgelehnt" if kandidat else "gescheitert", text, kandidat=kandidat,
                                         bericht=bericht)
-        ergebnis = {"version": aktive_version, "status": "failed", "text": text,
-                    "warnungen": (warnungen or [])[:6], "kandidat": kandidat, "diagnose": diagnose}
-        await asyncio.to_thread(speicher.job_aendern, self.auftrag.job_id, status="failed", fehler=text,
-                                ergebnis=ergebnis, verbrauch=self.verbrauch)
+        endstatus = "needs_attention" if ergebnis and aktive_version else "failed"
+        antwort = {"version": aktive_version, "status": endstatus, "text": text,
+                   "warnungen": (warnungen or [])[:6], "kandidat": kandidat, "diagnose": diagnose}
+        await asyncio.to_thread(speicher.job_aendern, self.auftrag.job_id, status=endstatus,
+                                fehler="" if endstatus != "failed" else text,
+                                ergebnis=antwort, verbrauch=self.verbrauch)
         await self.tokenstand()
-        await self.melde("fehler", text=text, technik=technik[:1500], produkt=aktiv,
-                         warnungen=(warnungen or [])[:6])
-        await self.status("failed", text)
+        if endstatus == "failed":
+            await self.melde("fehler", text=text, technik=technik[:1500], produkt=aktiv,
+                             warnungen=(warnungen or [])[:6])
+        else:
+            await self.melde("fertig", **antwort, produkt=aktiv, verbrauch=self.verbrauch)
+        await self.status(endstatus, text)
 
     async def beenden_ohne_version(self, text: str, aktive_version: int) -> None:
         """Verwerfen ohne neuen Wunsch: nichts zu bauen, die aktive Version bleibt."""

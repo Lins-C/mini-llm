@@ -378,7 +378,8 @@ class PipelineTests(SpeicherTestfall):
         _, produkt, ereignisse = self.lauf("aendern", zugang, pipeline.Eingabe(text="x"), [bericht(fehler=1)], produkt)
         self.assertEqual(produkt["version"], 1)
         self.assertEqual(produkt["status"], "ready")
-        self.assertIn("Version 1 bleibt aktiv", [e for e in ereignisse if e["type"] == "fehler"][0]["text"])
+        # Ergebnisgarantie: eine Antwort mit Begründung, kein Fehlschlag.
+        self.assertIn("Version 1 bleibt aktiv", [e for e in ereignisse if e["type"] in {"fehler", "fertig"}][-1]["text"])
 
     def test_a_too_small_window_is_said_plainly(self):
         gross = BMI + "<!-- x -->" * 4000
@@ -388,7 +389,7 @@ class PipelineTests(SpeicherTestfall):
         produkt = speicher.produkt(self.user, erst["id"])
         zugang = GespielterZugang([], fenster=8192)
         _, _, ereignisse = self.lauf("aendern", zugang, pipeline.Eingabe(text="x"), [bericht()], produkt)
-        fehler = [e for e in ereignisse if e["type"] == "fehler"][0]["text"]
+        fehler = [e for e in ereignisse if e["type"] in {"fehler", "fertig"}][-1]["text"]
         self.assertIn("Kontextfenster", fehler)
         self.assertIn("Cloud-Modell", fehler)
 
@@ -844,7 +845,7 @@ class KandidatTests(SpeicherTestfall):
         self.assertEqual([v["nummer"] for v in versionen], [1, 2])   # Kandidat bleibt nachlesbar
         self.assertEqual(speicher.version(produkt["id"], 1)["html"], KONFIGURATOR)
         job = speicher.job(self.user, auftrag.job_id)
-        self.assertEqual(job["status"], "failed")
+        self.assertEqual(job["status"], "needs_attention")      # Antwort mit Begründung
         self.assertIn("letzte funktionierende Version", job["ergebnis"]["text"])
         self.assertEqual(job["ergebnis"]["kandidat"], 2)
 
@@ -895,7 +896,7 @@ class KandidatTests(SpeicherTestfall):
         self.assertTrue(any("ohne messbare Wirkung" in e.get("text", "") for e in ereignisse if e["type"] == "technik"))
         self.assertEqual(nachher["version"], 1)
         self.assertTrue(any("noch nicht vollständig umsetzen" in e.get("text", "")
-                            for e in ereignisse if e["type"] == "fehler"))
+                            for e in ereignisse if e["type"] in {"fehler", "fertig"}))
 
     def test_changing_findings_still_get_both_repairs(self):
         produkt = self.produkt_mit_version()
@@ -973,17 +974,22 @@ class AbnahmeKetteTests(SpeicherTestfall):
         self.assertTrue(any("leer" in b["text"] or "entfernt" in b["text"]
                             for b in kandidat["pruefung"]["befunde"]), kandidat["pruefung"]["befunde"])
 
-        # Kandidat 2: technisch in Ordnung, Auftrag aber nicht umgesetzt → abgelehnt.
+        # Kandidat 2: technisch in Ordnung, Auftrag aber nicht umgesetzt → seit der
+        # Ergebnisgarantie (06.10.2026) aktiv, aber „mit Einschränkungen“ und mit
+        # ehrlicher Liste des Offenen; „Rückgängig“ holt Version 1 zurück.
         produkt = speicher.produkt(self.user, produkt["id"])
-        _, nachher, ereignisse, _ = self.aendern(produkt, [KANDIDAT_OHNE_MASKE] * 3)
-        self.assertEqual(nachher["version"], 1, "unvollständige Umsetzung darf nicht aktiv werden")
-        abgelehnt = speicher.version(produkt["id"], speicher.versionen(produkt["id"])[-1]["nummer"])
-        befunde = abgelehnt["pruefung"]["befunde"]
+        auftrag2, nachher, ereignisse, _ = self.aendern(produkt, [KANDIDAT_OHNE_MASKE] * 3)
+        self.assertGreater(nachher["version"], 1)
+        self.assertEqual(nachher["status"], "needs_attention")
+        teil = speicher.version(produkt["id"], nachher["version"])
+        befunde = teil["pruefung"]["befunde"]
         self.assertFalse([b for b in befunde if b["art"] == "fehler"], f"technisch sollte es laufen: {befunde}")
         self.assertTrue([b for b in befunde if b["art"] == "abnahme"], f"Abnahme muss greifen: {befunde}")
-        offen = [e["id"] for e in abgelehnt["pruefung"]["abnahme"]["ergebnisse"] if e["urteil"] == "fehlt"]
+        offen = [e["id"] for e in teil["pruefung"]["abnahme"]["ergebnisse"] if e["urteil"] == "fehlt"]
         self.assertIn("absender", offen)
         self.assertIn("word", offen)
+        warnungen = " ".join(speicher.job(self.user, auftrag2.job_id)["ergebnis"]["warnungen"])
+        self.assertIn("Offen:", warnungen)
 
         # Kandidat 3: erfüllt den Auftrag → erst jetzt aktiv und bereit.
         produkt = speicher.produkt(self.user, produkt["id"])

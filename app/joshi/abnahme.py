@@ -106,7 +106,124 @@ Antworte nur mit JSON:
     "nicht_pruefbar" – braucht mehrere Geräte, Tabs oder Nutzer gleichzeitig oder eine echte Offline-/Online-Verbindung
   - aktion: nur bei "bedienung": speichern | laden | neu | rueckgaengig | wiederholen | export | filter | umschalten | navigation | anzeigen | ziehen | sonstiges ("ziehen" = Drag & Drop / Verschieben; "umschalten" = Auf-/Zuklappen)
 
+Fehlerberichte: Beschreibt der Nutzer, was gerade FALSCH ist („… statt …“, „ist fälschlich …“, „korrigiere“, „behebe den Fehler“), dann beschreibt jedes Kriterium den RICHTIGEN Zielzustand — nie den gemeldeten Fehler. Beispiel: „Der Mond umkreist die Sonne statt die Erde, korrigiere den Fehler“ → Kriterium „Der Mond umkreist die Erde“, nicht „Der Mond umkreist die Sonne“.
+
 Prüfe nur, was der Nutzer verlangt. Erfinde keine zusätzlichen Wünsche, keine Technik, keine Qualitätsziele."""
+
+# Gegenprobe für Fehlerberichte (Fall 06.10.2026, Kosmos): Aus „der Mond umkreist
+# die Sonne statt die Erde, korrigiere den kleinen Fehler“ wurde das Kriterium
+# „In der Anwendung steht, dass der Mond die Sonne umkreist“. JOSHI verstärkte vier
+# Versuche lang den Fehler, und der eingefrorene Vertrag hielt ihn fest.
+_FEHLERBERICHT = re.compile(r"korrigier|behebe|beheb|\bfehler|falsch|fälschlich|faelschlich|\bbug\b|"
+                            r"stimmt nicht|\bstatt\b|anstatt|sollte aber|ist verkehrt", re.IGNORECASE)
+
+GEGENPROBE_SYSTEM = """Du prüfst Abnahmekriterien gegen den Wortlaut eines Änderungswunsches.
+
+Der Wunsch kann einen Fehler melden („X statt Y“, „ist fälschlich …“, „korrigiere …“). Dann beschreibt er den
+IST-Zustand, der falsch ist. Ein Kriterium muss den RICHTIGEN Zielzustand nach der Korrektur beschreiben.
+
+Für jedes Kriterium:
+- richtung "ziel": Es beschreibt den gewünschten, korrigierten Zustand. Nichts ändern.
+- richtung "fehler": Es beschreibt den gemeldeten Fehler (oder verlangt ihn sogar). Dann gib in "beschreibung"
+  den korrigierten Zielzustand als prüfbaren Satz und in "stichworte" 2 bis 4 passende Wörter an.
+- richtung "entfaellt": Es verbietet oder entfernt den RICHTIGEN Zustand (z. B. „Die Erde wird nicht mehr als
+  das genannt, was der Mond umkreist“) oder ist durch die Korrektur sinnlos geworden.
+
+Gehe so vor: Schreibe zuerst in "ist", was laut Nutzer gerade FALSCH ist, und in "soll", was stattdessen
+RICHTIG sein muss. Ordne erst dann jedes Kriterium ein: Verlangt es das „ist“, ist es "fehler".
+
+Beispiel: Wunsch „der Mond umkreist die Sonne statt die Erde, korrigiere den Fehler“ → ist: „Der Mond umkreist
+die Sonne“, soll: „Der Mond umkreist die Erde“. Kriterium „In der Anwendung steht, dass der Mond die Sonne
+umkreist“ → richtung "fehler", beschreibung „Der Mond umkreist die Erde“.
+Antworte nur mit JSON: {"ist": "…", "soll": "…", "ergebnisse": [{"id": "…", "richtung": "…", …}]}."""
+
+GEGENPROBE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "ist": {"type": "string"},
+        "soll": {"type": "string"},
+        "ergebnisse": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "richtung": {"type": "string", "enum": ["ziel", "fehler", "entfaellt"]},
+                    "beschreibung": {"type": "string"},
+                    "stichworte": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id", "richtung"],
+            },
+        },
+    },
+    "required": ["ist", "soll", "ergebnisse"],
+}
+
+
+def ist_fehlerbericht(wunsch: str) -> bool:
+    return bool(_FEHLERBERICHT.search(wunsch or ""))
+
+
+async def vertrag_gegenpruefen(zugang: Any, modell: str, *, wunsch: str, vertrag: dict[str, Any],
+                               verbrauch: dict[str, int]) -> tuple[dict[str, Any], list[str]]:
+    """Dreht Kriterien um, die den gemeldeten Fehler statt des Ziels beschreiben.
+
+    Rückgabe: (Vertrag mit Marke „gegengeprueft“, Liste der korrigierten Kriterien).
+    Ohne Fehlerbericht oder bei einem Fehler der Modellschicht bleibt alles, wie es ist.
+    """
+    kriterien = [k for k in vertrag.get("kriterien") or [] if not k.get("entfallen")]
+    if not kriterien or not ist_fehlerbericht(wunsch):
+        return {**vertrag, "gegengeprueft": True}, []
+    liste = "\n".join(f"- {k['id']}: {k.get('beschreibung', '')}" for k in kriterien)
+    nachrichten = [{"role": "system", "content": GEGENPROBE_SYSTEM},
+                   {"role": "user", "content": f"Änderungswunsch:\n{wunsch.strip()[:4000]}\n\nKriterien:\n{liste}"}]
+    # Kleine Modelle urteilen hier unbeständig (06.10.2026: ein Cloud-Modell hielt bei derselben
+    # Frage einmal alles für „ziel“, einmal korrigierte es alle drei verdrehten Kriterien).
+    # Findet der erste Durchgang nichts, fragt JOSHI ein zweites Mal.
+    urteile: dict[str, dict[str, Any]] = {}
+    for durchgang in range(2):
+        try:
+            roh = await zugang.strukturiert(modell, nachrichten, GEGENPROBE_SCHEMA, temperatur=0.0,
+                                            verbrauch=verbrauch)
+        except Exception:  # noqa: BLE001 – Gegenprobe ist eine Absicherung, kein Pflichtschritt
+            if not durchgang:
+                return vertrag, []          # beim nächsten Versuch noch einmal prüfen
+            break
+        # Modelle liefern das JSON auch als Text oder als nackte Liste (06.10.2026).
+        daten = roh if isinstance(roh, (dict, list)) else json_aus_antwort(roh)
+        ist = ""
+        if isinstance(daten, dict):
+            ist = str(daten.get("ist") or "")
+            daten = daten.get("ergebnisse") or next((w for w in daten.values() if isinstance(w, list)), [])
+        urteile = {str(e.get("id")): e for e in daten or [] if isinstance(e, dict)}
+        if any(e.get("richtung") in {"fehler", "entfaellt"} for e in urteile.values()):
+            break
+    # Sicherung gegen Fehlurteile: Umgedreht wird nur, was mit dem gemeldeten Fehler zu
+    # tun hat — „Zeit läuft langsamer“ kann ein „Mond umkreist Sonne“ nicht umdrehen.
+    ist_stamm = {w[:5] for w in _normal(ist).split() if len(w) >= 4 and w not in STOPWOERTER}
+
+    def betroffen(kriterium: dict[str, Any]) -> bool:
+        if not ist_stamm:
+            return True
+        return bool(ist_stamm & {w[:5] for w in _normal(kriterium.get("beschreibung", "")).split() if len(w) >= 4})
+
+    korrigiert: list[str] = []
+    neu = []
+    for kriterium in vertrag.get("kriterien") or []:
+        urteil = urteile.get(kriterium.get("id", ""))
+        if urteil and urteil.get("richtung") in {"fehler", "entfaellt"} and not betroffen(kriterium):
+            urteil = None
+        beschreibung = str((urteil or {}).get("beschreibung") or "").strip()
+        if urteil and urteil.get("richtung") == "entfaellt" and not kriterium.get("entfallen"):
+            korrigiert.append(f"„{kriterium.get('beschreibung', '')}“ entfällt (widerspricht der Korrektur)")
+            kriterium = {**kriterium, "entfallen": True, "entfallen_grund": "Gegenprobe: widerspricht dem Fehlerbericht"}
+        elif urteil and urteil.get("richtung") == "fehler" and beschreibung and beschreibung != kriterium.get("beschreibung"):
+            stichworte = stichwortliste(urteil.get("stichworte")) or stichworte_aus_text(beschreibung)
+            korrigiert.append(f"„{kriterium.get('beschreibung', '')}“ → „{beschreibung}“")
+            kriterium = {**kriterium, "beschreibung": beschreibung[:300], "stichworte": stichworte[:4],
+                         "korrigiert_aus": kriterium.get("beschreibung", "")}
+        neu.append(kriterium)
+    return {**vertrag, "kriterien": neu, "gegengeprueft": True}, korrigiert
 
 PRUEF_SYSTEM = """Du bist die Abnahme von JOSHI. Du siehst nicht den Code, sondern Messwerte aus dem Browser: Überschriften, Knöpfe, Eingabefelder, sichtbaren Text, was jeder Klick bewirkt hat (Speicher, Werte, Sichtbarkeit, Export …), Ergebnisse von Aktionsproben und Szenarien sowie den Stil vorher/nachher.
 
@@ -492,6 +609,13 @@ def beweisbar(beweise: dict[str, Any]) -> bool:
                 or beweise.get("aktionen") or beweise.get("szenarien"))
 
 
+# Ein angezeigtes Datum oder eine Uhrzeit belegen die Stichworte „Datum“ und
+# „Uhrzeit“, auch wenn die Wörter selbst nicht dastehen (Fall 06.10.2026: Kosmos
+# zeigte „06.10.2026 · 22:18:31“, die Abnahme meldete „Stichworte ohne Spur“).
+_DATUM = re.compile(r"\b\d{1,2}\.\s?\d{1,2}\.\s?(?:19|20)\d{2}\b|\b(?:19|20)\d{2}-\d{2}-\d{2}\b")
+_UHRZEIT = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
+
+
 def _fundus(beweise: dict[str, Any]) -> str:
     knoepfe = [re.sub(r"\(\s*[iℹⓘ]\s*\)", " Info ", k) for k in beweise.get("knoepfe", [])]
     teile = [*beweise.get("ueberschriften", []), *knoepfe,
@@ -500,7 +624,9 @@ def _fundus(beweise: dict[str, Any]) -> str:
         teile.append(klick.get("knopf", ""))
         teile.append(klick.get("neuerText", ""))
         teile.extend(klick.get("neueTexte", []))
-    return _normal(" ".join(t for t in teile if t))
+    roh = " ".join(t for t in teile if t)
+    marken = [*(["datum"] if _DATUM.search(roh) else []), *(["uhrzeit"] if _UHRZEIT.search(roh) else [])]
+    return _normal(" ".join([roh, *marken]))
 
 
 def _treffer(stichwort: str, fundus: str) -> bool:
@@ -1198,6 +1324,8 @@ Prüfungen (art):
 - dauer_hoechstens: ms seit "messen"
 
 Verwende nur Ziele, die in der Messung vorkommen. Jedes Szenario endet mit mindestens einer Prüfung. Zahlen so erwarten, wie die Anwendung sie anzeigt.
+Zufällige Inhalte (neue Mission bei jedem Start, zufällige Rätsel, Würfel, Codes): Erwarte keine konkreten Lösungen, Codes oder Texte, die du nicht in der Messung siehst — rate nie Spielzüge. Gibt es einen Knopf für einen automatischen Durchlauf, Selbsttest oder eine Demo, klicke ihn und prüfe dessen Ergebnistext (z. B. „erfolgreich“).
+Aktuelles Datum oder Uhrzeit: Erwarte sie nicht auf die Minute genau.
 Bei einem Wunsch "Namen eintragen und speichern; erscheint danach" prüfe die ganze Folge: ein eindeutiger Testname fehlt zunächst, wird in das passende Feld eingegeben, der passende Knopf geklickt, der Testname erscheint, nach neu_laden erscheint er erneut. Ein anderer Speichern- oder Exportknopf genügt nicht."""
 
 

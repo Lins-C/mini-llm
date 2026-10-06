@@ -23,6 +23,31 @@ const kurz = (t, n = 80) => String(t || "").replace(/\s+/g, " ").trim().slice(0,
 // Budget-Szenario scheiterte an „1.500,00 €“ gegen „1.500 €“).
 const geld = (t) => t.replace(/(\d)[.\u00a0\u202f' ](?=\d{3}(?!\d))/g, "$1").replace(/[.,]00(?!\d)/g, "")
   .replace(/\s*(?:€|eur\b|euro\b)/g, " €");
+// Erwartete Werte mit „jetzt“ (heutiges Datum, Uhrzeit um die aktuelle Zeit)
+// veralten, während das Szenario läuft (Fall 06.10.2026: erwartet „22:17“,
+// gemessen 22:18:31). Nur solche Stellen werden zur Form „irgendein Datum /
+// irgendeine Uhrzeit“; feste Werte wie ein eingegebener Termin bleiben exakt.
+function jetztMuster(erwartet) {
+  const jetzt = new Date();
+  const minuten = jetzt.getHours() * 60 + jetzt.getMinutes();
+  let gelockert = false;
+  const teile = String(erwartet).split(/(\d{1,2}:\d{2}(?::\d{2})?|\d{1,2}\.\d{1,2}\.\d{2,4})/);
+  const muster = teile.map((teil, i) => {
+    if (i % 2 === 0) return teil.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (teil.includes(":")) {
+      const [h, m] = teil.split(":").map(Number);
+      const abstand = Math.abs(h * 60 + m - minuten);
+      if (Math.min(abstand, 1440 - abstand) <= 180) { gelockert = true; return "\\d{1,2}:\\d{2}(?::\\d{2})?"; }
+    } else {
+      const [t, mo, j] = teil.split(".").map(Number);
+      const datum = new Date(j < 100 ? 2000 + j : j, mo - 1, t);
+      if (Math.abs(datum - jetzt) <= 2 * 86400000) { gelockert = true; return "\\d{1,2}\\.\\d{1,2}\\.\\d{2,4}"; }
+    }
+    return teil.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }).join("");
+  return gelockert ? new RegExp(muster) : null;
+}
+
 const norm = (t) => geld(String(t == null ? "" : t).toLowerCase().replace(/\s+/g, " ")).replace(/(\d),(\d)/g, "$1.$2").trim();
 const fehlerStart = (J.fehler || []).length;
 
@@ -470,7 +495,12 @@ async function szenario(schritte) {
       const quelle = el ? (el.matches(FELDER) ? wertVon(el) : el.innerText) : text();
       const erwartet = norm(s.wert);
       let ok = true, gefunden = "";
-      if (s.art === "text_enthaelt") { ok = norm(quelle).includes(erwartet); gefunden = kurz(quelle, 160); }
+      if (s.art === "text_enthaelt") {
+        ok = norm(quelle).includes(erwartet);
+        const frei = !ok && jetztMuster(erwartet);
+        if (frei) ok = frei.test(norm(quelle));
+        gefunden = kurz(quelle, 160);
+      }
       else if (s.art === "text_fehlt") { ok = !norm(quelle).includes(erwartet); gefunden = kurz(quelle, 160); }
       else if (s.art === "wert_ist") { ok = norm(quelle) === erwartet; gefunden = kurz(quelle, 80); }
       else if (s.art === "wert_enthaelt") { ok = norm(quelle).includes(erwartet); gefunden = kurz(quelle, 80); }
