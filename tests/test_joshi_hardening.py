@@ -80,6 +80,8 @@ class Skriptzugang(GespielterZugang):
 
     async def strom(self, modell, nachrichten, *, temperatur, verbrauch):
         self.anfragen.append(nachrichten)
+        if not self.skript:
+            raise RuntimeError("Testmodell: keine Antwort mehr im Drehbuch")
         eintrag = self.skript.pop(0)
         text, ende = eintrag if isinstance(eintrag, tuple) else (eintrag, "stop")
         try:
@@ -727,6 +729,47 @@ class GestufterModusTests(HardeningTestfall):
         self.assertEqual([k["id"] for k in lauf_._noch_offen(vertrag(3))["kriterien"]], ["k1", "k2"])
         # Ist alles nachgewiesen, bleibt der ganze Vertrag (nichts wird stillschweigend leer).
         self.assertEqual(len(lauf_._noch_offen(vertrag(1))["kriterien"]), 1)
+
+    def test_l_e_a_complete_app_from_the_chat_is_taken_over(self):
+        """08.10.2026, Kolibri Jump: Die fertige Chat-Fassung wurde gekürzt und in 7 Schritten nachgebaut."""
+        from app.joshi import bruecke
+        produkt = self.produkt()
+        chat_html = BMI.replace("<h1>BMI-Rechner</h1>", "<h1>BMI-Rechner</h1><nav>Drei-Punkte-Menü</nav>")
+        antwort = "Hier ist die Datei:\n```html\n" + chat_html + "\n```\nDas Menü sitzt jetzt oben rechts."
+        wunsch = bruecke.aenderung_aus_chat("Mach ein Drei-Punkte-Menü", antwort)
+        self.assertNotIn("<!DOCTYPE", wunsch)
+        self.assertIn("Drei-Punkte-Menü", bruecke.html_im_chat(antwort))
+        zugang = Skriptzugang([], vertrag={"zusammenfassung": "Menü", "kriterien": [
+            {"id": "menue", "beschreibung": "Ein Drei-Punkte-Menü ist da", "stichworte": ["Drei-Punkte-Menü"],
+             "pflicht": True, "nachweis": "inhalt"}]})
+        job = speicher.job_anlegen(self.user, produkt["id"], "aendern", {"text": wunsch}, "m")
+        aktuell = speicher.produkt(self.user, produkt["id"])
+
+        async def ausfuehren():
+            with patch.object(pipeline.pruefer, "pruefen", html_pruefung()):
+                await pipeline.Lauf(Auftrag(job["id"], produkt["id"], self.user), user_id=self.user, produkt=aktuell,
+                                    art="aendern", eingabe=pipeline.Eingabe(text=wunsch, html=bruecke.html_im_chat(antwort)),
+                                    modell="m", zugang=zugang).ausfuehren()
+        asyncio.run(ausfuehren())
+        nachher = speicher.produkt(self.user, produkt["id"])
+        self.assertEqual(nachher["version"], 2)
+        self.assertIn("Drei-Punkte-Menü", speicher.version(produkt["id"], 2)["html"])
+        self.assertEqual(zugang.skript, [])               # kein Modellstrom zum Nachbauen
+        self.assertEqual(speicher.job(self.user, job["id"])["status"], "ready")
+
+    def test_l_f_the_whole_file_strategy_wins_when_it_proves_more(self):
+        """Zweite Strategie wie im Chat: Patch bleibt offen, die ganz neu geschriebene Datei besteht."""
+        produkt = self.produkt(BMI)
+        vertrag1 = vertrag(1)
+        wort = vertrag1["kriterien"][0]["stichworte"][0]
+        ganz = BMI.replace("<h1>BMI-Rechner</h1>", f"<h1>BMI-Rechner</h1><p>{wort}</p>")
+        zugang = Skriptzugang([block("<h1>BMI-Rechner</h1>", "<h1>BMI-Rechner</h1><p>nichts</p>")] * 3 + [ganz],
+                              vertrag=vertrag1)
+        auftrag, nachher, ereignisse = lauf(self.user, produkt, "aendern", zugang, "Zeige das Diagramm")
+        self.assertEqual(nachher["version"], 2)
+        self.assertIn(wort, speicher.version(produkt["id"], 2)["html"])
+        self.assertEqual(speicher.job(self.user, auftrag.job_id)["status"], "ready")
+        self.assertTrue(any("komplett neu" in e.get("text", "") for e in ereignisse if e["type"] == "hinweis"))
 
     def test_one_shot_truncation_switches_to_stages(self):
         produkt = self.produkt()

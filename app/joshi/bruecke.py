@@ -51,9 +51,20 @@ def auftrag_aus_chat(frage: str, antwort: str) -> str:
     return "Setze das Konzept aus dem Chat als benutzbare Anwendung um."
 
 
+def ohne_code(antwort: str) -> str:
+    """Die Erklärung einer Chat-Antwort ohne den Code-Block (der reist als HTML mit)."""
+    text = re.sub(r"```[a-zA-Z]*\n.*?```", "[vollständige HTML-Datei aus dem Chat]", antwort or "", flags=re.S)
+    text = re.sub(r"<!doctype html.*?</html>", "[vollständige HTML-Datei aus dem Chat]", text, flags=re.S | re.I)
+    return text.strip()
+
+
 def aenderung_aus_chat(frage: str, antwort: str) -> str:
-    """Vorschläge aus einem Chat über ein Produkt werden zum Änderungswunsch."""
-    text = antwort.strip()
+    """Vorschläge aus einem Chat über ein Produkt werden zum Änderungswunsch.
+
+    Enthält die Antwort eine komplette Anwendung, übernimmt JOSHI sie direkt
+    (Eingabe.html); der Wunsch trägt dann nur Frage und Erklärung, ohne Code.
+    """
+    text = ohne_code(antwort) if html_im_chat(antwort) else antwort.strip()
     if len(text) > 6000:
         text = text[:6000] + "\n[… gekürzt …]"
     wunsch = "Setze diese Vorschläge aus dem Chat in der Anwendung um:\n\n" + text

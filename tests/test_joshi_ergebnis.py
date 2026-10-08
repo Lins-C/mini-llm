@@ -12,7 +12,8 @@ obwohl „06.10.2026 · 22:18:31“ angezeigt wurde.
 import asyncio
 import unittest
 
-from app.joshi import abnahme
+from app.joshi import abnahme, renderer
+from app.joshi.html_werk import laufzeit_dokument
 
 
 class Fehlerzugang:
@@ -122,3 +123,90 @@ class DatumUhrzeitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VollbildTests(unittest.TestCase):
+    """08.10.2026, Kolibri Jump: „Spielbereich nimmt den ganzen Bildschirm ein“ war nur geschätzt."""
+
+    def kriterium(self):
+        return {"id": "vollbild", "beschreibung": "Der Spielbereich nimmt die gesamte Breite und Höhe des Bildschirms ein.",
+                "stichworte": ["Spielbereich"], "nachweis": "gestaltung", "pflicht": True}
+
+    def test_a_canvas_filling_the_screen_is_measured(self):
+        urteil, beleg, _ = abnahme._gestaltung_pruefen(self.kriterium(), {"gestaltung": {
+            "farben": {}, "schatten": 0, "vollbild": {"breite": 100, "hoehe": 100, "element": "canvas#spiel"}}})
+        self.assertEqual(urteil, "erfuellt")
+        self.assertIn("canvas#spiel", beleg)
+
+    def test_a_small_area_is_not_full_screen(self):
+        urteil, _, _ = abnahme._gestaltung_pruefen(self.kriterium(), {"gestaltung": {
+            "farben": {}, "schatten": 0, "vollbild": {"breite": 100, "hoehe": 55, "element": "canvas"}}})
+        self.assertEqual(urteil, "fehlt")
+
+
+SPIEL = """<!DOCTYPE html><html><head><style>html,body{margin:0;height:100%}
+canvas{position:fixed;inset:0;width:100%;height:100%}</style></head><body><canvas id="spiel"></canvas>
+<script>
+window.dispatchEvent(new ErrorEvent("error", {message: "ResizeObserver loop completed with undelivered notifications."}));
+window.dispatchEvent(new ErrorEvent("error", {message: "Script error."}));
+setTimeout(function(){ window.dispatchEvent(new ErrorEvent("error", {message: "echter Fehler", lineno: 7})); }, 10);
+</script></body></html>"""
+
+
+@unittest.skipUnless(renderer.status().get("verfuegbar"), "WebKit-Renderer auf diesem Rechner nicht übersetzt")
+class ImBrowserTests(unittest.TestCase):
+    def test_hidden_start_is_not_confused_with_restart(self):
+        """08.10.2026: „Start unsichtbar“ griff zum sichtbaren „Neustart“."""
+        from app.joshi import pruefer
+        seite = ("<html><body><button id='s' type='button'>Start</button>"
+                 "<button id='n' type='button' style='display:none'>Neustart</button>"
+                 "<script>document.getElementById('s').addEventListener('click', function () {"
+                 "this.style.display = 'none'; document.getElementById('n').style.display = 'inline-block'; });"
+                 "</script></body></html>")
+        szenario = [{"id": "s1", "kriterium": "k", "schritte": [
+            {"art": "klicken", "ziel": "Start"}, {"art": "warten", "ms": 100}, {"art": "unsichtbar", "ziel": "Start"},
+            {"art": "sichtbar", "ziel": "Neustart"}]}]
+        _, ergebnisse = asyncio.run(pruefer.szenarien_ausfuehren(seite, szenarien=szenario))
+        self.assertEqual(ergebnisse[0]["ergebnis"], "bestanden", ergebnisse)
+
+    def test_animation_frames_run_in_the_check(self):
+        """08.10.2026: Im unsichtbaren Prüfbrowser lief requestAnimationFrame nie — Spiele standen still."""
+        seite = "<html><body><p id='z'>0</p><script>var n=0;(function f(){n++;document.getElementById('z').textContent=n;requestAnimationFrame(f);})();</script></body></html>"
+        messung = asyncio.run(renderer.rendern(laufzeit_dokument(seite, modus="pruefung"), warten=0.6,
+                                               probe="return JSON.stringify({n: Number(document.getElementById('z').textContent)});"))
+        self.assertGreater(messung.probe["n"], 10)
+
+    def test_benign_messages_are_ignored_and_full_screen_is_measured(self):
+        from app.joshi.renderer import INHALT_JS
+        messung = asyncio.run(renderer.rendern(laufzeit_dokument(SPIEL, modus="pruefung"), probe=INHALT_JS, warten=0.5))
+        fehler = [f["text"] for f in messung.probe["fehler"]]
+        self.assertEqual(fehler, ["echter Fehler"])
+        vollbild = messung.probe["gestaltung"]["vollbild"]
+        self.assertGreaterEqual(vollbild["breite"], 95)
+        self.assertGreaterEqual(vollbild["hoehe"], 95)
+        self.assertEqual(vollbild["element"], "canvas#spiel")
+
+
+class SymbolknopfTests(unittest.TestCase):
+    def test_three_dots_button_matches_the_named_symbol(self):
+        beweise = {"klicks": [{"knopf": "Menü öffnen (⋮)", "effekte": ["element_shown", "toggled"],
+                               "aufklapper": True, "zurueck": True, "neueTexte": ["Start"]}]}
+        kriterium = {"id": "m", "beschreibung": "Ein erneuter Klick auf das Drei-Punkte-Symbol schließt das Menü wieder.",
+                     "stichworte": ["Drei-Punkte-Symbol", "Menü"], "nachweis": "bedienung", "aktion": "umschalten"}
+        urteil, _, _ = abnahme._bedienung_pruefen(kriterium, beweise, abnahme._fundus(beweise))
+        self.assertEqual(urteil, "erfuellt")
+
+
+class VerschobenNichtVerlorenTests(unittest.TestCase):
+    """08.10.2026: Knöpfe wanderten gewollt ins Drei-Punkte-Menü — kein Inhaltsverlust."""
+
+    def test_controls_revealed_by_clicks_count(self):
+        from app.joshi import pruefer
+        vorher = {"textLaenge": 193, "knoepfe": ["Start", "Pause", "Weiter", "Neustart", "Ton", "Links", "Schuss",
+                                                  "Rechts", "i"], "felder": [], "sichtbar": {"elemente": 34}}
+        nachher = {"textLaenge": 120, "knoepfe": ["⋮", "Links", "Schuss", "Rechts"], "felder": [],
+                   "sichtbar": {"elemente": 29}}
+        self.assertTrue(pruefer.regressionsbefunde(vorher, nachher))          # nur beim Laden gemessen: Verlust
+        interaktion = {"knoepfe": 10, "felder": 0, "klicks": [
+            {"knopf": "⋮", "neueTexte": ["Start", "Pause", "Weiter", "Neustart", "Ton: an", "Anleitung"]}]}
+        self.assertEqual(pruefer.regressionsbefunde(vorher, nachher, interaktion=interaktion), [])

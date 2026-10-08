@@ -222,6 +222,10 @@ class GespielterZugang:
 
     async def strom(self, modell, nachrichten, *, temperatur, verbrauch):
         self.anfragen.append(nachrichten)
+        if not self.antworten:
+            # Drehbuch zu Ende: wie ein Modell, das nicht mehr antwortet (z. B. für
+            # JOSHIs zweite Strategie, die ein Test nicht eigens vorbereitet).
+            raise RuntimeError("Testmodell: keine Antwort mehr im Drehbuch")
         text = self.antworten.pop(0)
         for stelle in range(0, len(text), 400):
             yield {"text": text[stelle:stelle + 400]}
@@ -892,7 +896,8 @@ class KandidatTests(SpeicherTestfall):
             [bericht(fehler=1)], produkt)
         # Erstversuch plus eine Reparatur: Die Reparatur änderte nichts an den
         # Befunden, also rät JOSHI nicht ein zweites Mal (Stillstandsregel).
-        self.assertEqual(len(htmls), 2)
+        # Dazu kommt einmal die zweite Strategie (ganze Datei neu, 08.10.2026).
+        self.assertEqual(len(htmls), 3)
         self.assertTrue(any("ohne messbare Wirkung" in e.get("text", "") for e in ereignisse if e["type"] == "technik"))
         self.assertEqual(nachher["version"], 1)
         self.assertTrue(any("noch nicht vollständig umsetzen" in e.get("text", "")

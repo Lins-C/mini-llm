@@ -159,6 +159,32 @@ Geprüft mit echten Läufen (`glm-5.3-flash:cloud`, Kopie der Live-Daten): Kosmo
 3/6 auf 5/6 nachgewiesene Punkte; AI Escape liefert statt Abbruch eine Version mit Begründung.
 Tests: `tests/test_joshi_ergebnis.py`, `test_joshi_hardening.py` (`test_l_*`, Server-Fehler im Strom).
 
+## Chat-Weg: was der normale Chat kann, kann JOSHI auch (08.10.2026)
+
+Anlass: Kolibri Jump. Der Chat schrieb die Datei mit „Drei-Punkte-Menü, Vollbild-Spielfeld“ in einem Rutsch
+fehlerfrei neu; JOSHI blieb mit Patches in 10 Projektdateien offen (244.000 Tokens).
+
+- **Übernahme aus dem Chat:** Enthält eine Chat-Antwort zu einem bestehenden Produkt eine komplette
+  Anwendung, wird genau diese Fassung Kandidat (`Eingabe.html`, `chat_fassung_uebernehmen`) — geprüft,
+  repariert und abgenommen wie jeder Stand. Der Änderungswunsch trägt nur Frage und Erklärung, ohne Code.
+  Echt gemessen: Version nach 171 s statt 244.000 Tokens ohne Ergebnis.
+- **Zweite Strategie:** Bleiben bei einer Änderung Pflichtpunkte offen, Fehler oder Inhaltsverlust, lässt
+  JOSHI die Datei (bis 120.000 Zeichen) einmal komplett neu schreiben — wie der Chat — und nimmt den
+  nachweislich besseren Stand (`gesamtwertung`: Fehler, Verlust, offene Pflichtpunkte, übrige Befunde).
+  Auch wenn kein Schritt einzubauen war, kommt die zweite Strategie vor „Version N bleibt aktiv“.
+- **Harmlose Browser-Meldungen** (`ResizeObserver loop …`, inhaltsloses „Script error.“) gelten nicht mehr
+  als Fehler der Anwendung — vorher löste eine davon eine „Reparatur“ aus, an der sich das Modell festdachte.
+- **Vollbild messbar:** Die größte Spiel-/Zeichenfläche wird beim Laden **und nach jedem Klick** gemessen
+  (ein Spiel zeigt seine Fläche oft erst nach „Start“). „Nimmt den ganzen Bildschirm ein“ ist erfüllt ab
+  95 % Breite und 80 % Höhe.
+- **Symbolknöpfe:** ⋮ ⋯ … heißen „Drei-Punkte-Menü“, ☰ „Hamburger-Menü“ — so finden Kriterien sie.
+- **Animationen in der Prüfung:** Der unsichtbare Prüfbrowser ruft `requestAnimationFrame` nie auf (gemessen:
+  0 Bilder/s) — jedes Canvas-Spiel stand still. Im Prüfmodus treibt die Laufzeit die Bilder mit ~60 Hz an;
+  „die Spielfigur bewegt sich nach Start“ ist damit nachweisbar.
+- **Verschoben ist nicht verloren:** Der Inhaltsverlust-Schutz zählt auch Knöpfe und Texte, die erst nach
+  einem Klick erscheinen. Wandern Knöpfe gewollt ins Drei-Punkte-Menü, gilt das nicht mehr als „deutlich
+  kleiner“ (vorher wurde der gewünschte Umbau dadurch nie aktiv).
+
 ## Abnahme: drei Ebenen bis „bereit“
 
 Technisch lauffähig heißt nicht erfüllt. Eine Kandidatenversion wird erst

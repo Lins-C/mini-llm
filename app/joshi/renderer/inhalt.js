@@ -123,7 +123,20 @@ const gestaltung = (() => {
     if (alpha && parseFloat(alpha[1]) > 0.05 && parseFloat(alpha[1]) < 0.9) transparent++;
     if (s.boxShadow && s.boxShadow !== "none") schatten++;
   }
-  return { farben, glas, transparent, schatten };
+  // Größte Spielfläche/Zeichenfläche: wie viel von Breite und Höhe des Fensters sie
+  // einnimmt — Beleg für „Spielbereich im Vollbild“ (08.10.2026, Kolibri Jump: nur
+  // geschätzt, deshalb offen, obwohl die Leinwand den ganzen Bildschirm füllte).
+  let vollbild = { breite: 0, hoehe: 0, element: "" };
+  for (const el of document.querySelectorAll("canvas, svg, main, video, iframe, [id*='game' i], [id*='spiel' i], [class*='game' i], [class*='spiel' i]")) {
+    if (!sichtbar(el)) continue;
+    const r = el.getBoundingClientRect();
+    const b = Math.round(Math.min(r.right, window.innerWidth) - Math.max(r.left, 0)) / window.innerWidth * 100;
+    const h = Math.round(Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0)) / window.innerHeight * 100;
+    if (b * h > vollbild.breite * vollbild.hoehe) {
+      vollbild = { breite: Math.round(b), hoehe: Math.round(h), element: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") };
+    }
+  }
+  return { farben, glas, transparent, schatten, vollbild };
 })();
 
 // Aufbau: Wie viele Spalten bilden die wiederholten Karten, wie breit sind sie

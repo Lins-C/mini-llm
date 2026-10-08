@@ -186,7 +186,7 @@ def leerbefunde(gliederung: dict[str, Any]) -> list[Befund]:
 
 
 def regressionsbefunde(baseline: dict[str, Any], gliederung: dict[str, Any],
-                       rueckbau: bool = False) -> list[Befund]:
+                       rueckbau: bool = False, interaktion: dict[str, Any] | None = None) -> list[Befund]:
     """Vergleicht die neue Fassung mit der zuletzt geprüften Version.
 
     Verglichen wird relativ, damit kleine Anwendungen nicht an festen Zahlen
@@ -197,6 +197,14 @@ def regressionsbefunde(baseline: dict[str, Any], gliederung: dict[str, Any],
         return []
     alt = sichtwerte(baseline)
     neu = sichtwerte(gliederung)
+    if interaktion:
+        # Was erst nach einem Klick erscheint (Drei-Punkte-Menü, Startbildschirm), ist nicht
+        # verloren (08.10.2026, Kolibri Jump: Knöpfe wanderten gewollt ins Menü, die Prüfung
+        # meldete „deutlich kleiner“, und der gewünschte Umbau wurde nie aktiv).
+        klicks = interaktion.get("klicks") or []
+        neu["bedienung"] = max(neu["bedienung"], int(interaktion.get("knoepfe") or 0)
+                               + int(interaktion.get("felder") or 0))
+        neu["text"] += min(sum(len(str(t)) for k in klicks for t in (k.get("neueTexte") or [])), 4000)
     if alt["text"] < 80 and alt["bedienung"] < 2:
         return []   # Die Vorlage war selbst kaum etwas — nichts zu vergleichen.
 
@@ -380,7 +388,7 @@ async def pruefen(
         return Pruefbericht(befunde, browser=False, dauer=time.monotonic() - beginn)
     weitere, gliederung, interaktion = _befunde_aus_messung(dokument, messung, handy, list(erwartet or []))
     befunde.extend(weitere)
-    befunde.extend(regressionsbefunde(baseline or {}, gliederung, rueckbau))
+    befunde.extend(regressionsbefunde(baseline or {}, gliederung, rueckbau, interaktion))
     exporte = await exporte_pruefen((messung.probe or {}).get("exporte") or [], gliederung.get("titel", ""))
     for eintrag in exporte:
         if not eintrag["ok"]:

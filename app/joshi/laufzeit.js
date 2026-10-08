@@ -25,13 +25,39 @@
   var joshi = { fehler: fehler, dialoge: dialoge, modus: modus };
   window.__joshi = joshi;
 
+  // Der Prüfbrowser läuft unsichtbar; dort ruft WebKit requestAnimationFrame nie auf
+  // (08.10.2026 gemessen: 0 Bilder/s). Jedes Canvas-Spiel stand still, „die Figur
+  // bewegt sich“ war nie nachweisbar. In der Prüfung treibt ein ~60-Hz-Takt die Bilder.
+  if (modus === "pruefung") {
+    var bildNummer = 0, bildAuftraege = {};
+    window.requestAnimationFrame = function (rueckruf) {
+      var nummer = ++bildNummer;
+      bildAuftraege[nummer] = setTimeout(function () {
+        delete bildAuftraege[nummer];
+        try { rueckruf(performance.now()); } catch (e) { setTimeout(function () { throw e; }); }
+      }, 16);
+      return nummer;
+    };
+    window.cancelAnimationFrame = function (nummer) {
+      clearTimeout(bildAuftraege[nummer]);
+      delete bildAuftraege[nummer];
+    };
+  }
+
   function melden(art, daten) {
     if (modus !== "vorschau") return;
     try { parent.postMessage({ joshi: 1, art: art, daten: daten }, "*"); } catch (e) {}
   }
 
   // ---------------------------------------------------------------- Fehler
+  // Harmlose Browser-Meldungen sind keine Fehler der Anwendung (08.10.2026, Kolibri
+  // Jump: „ResizeObserver loop completed with undelivered notifications“ galt als
+  // Skriptfehler, JOSHI „reparierte“ ihn und das Modell verlor sich darin).
+  // „Script error.“ ohne Zeile verrät nichts Verwertbares und wird ebenfalls übergangen.
+  var HARMLOS = /ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)/i;
   function fehlerMerken(text, zeile, quelle) {
+    var roh = String(text || "");
+    if (HARMLOS.test(roh) || (/^\s*Script error\.?\s*$/i.test(roh) && !zeile)) return;
     var eintrag = { text: String(text || "Unbekannter Fehler").slice(0, 400), zeile: zeile || 0, quelle: quelle || "" };
     if (fehler.length < 30) fehler.push(eintrag);
     melden("fehler", eintrag);

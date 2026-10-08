@@ -90,11 +90,23 @@ function finde(ziel, art) {
     .filter((el) => sichtbar(el) || art === "feld");
   const merkmale = (el) => [el.id, el.getAttribute("name"), el.getAttribute("data-cell"), el.getAttribute("data-id"),
     el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.title,
-    art === "knopf" ? beschriftung(el) : feldBeschriftung(el)].map(norm).filter(Boolean);
+    // Knöpfe heißen nach ihrer Beschriftung — auch bei sichtbar/unsichtbar-Prüfungen
+    // (art ""), sonst war „Knopf Neustart ist sichtbar“ nie nachweisbar (08.10.2026).
+    art === "knopf" || (art !== "feld" && el.matches(KNOEPFE)) ? beschriftung(el) : feldBeschriftung(el)]
+    .map(norm).filter(Boolean);
   const passend = liste.filter((el) => (art !== "feld" || el.matches(FELDER)) && merkmale(el).includes(z));
   if (passend.length) return passend.find(sichtbar) || passend[0];
   const teilweise = liste.filter((el) => (art !== "feld" || el.matches(FELDER)) && merkmale(el).some((m) => m.includes(z)));
   return teilweise.find(sichtbar) || teilweise[0] || null;
+}
+// Alle Elemente (auch ausgeblendete), die genau so heißen — für sichtbar/unsichtbar.
+// 08.10.2026, Kolibri Jump: Nach „Start“ war der Start-Knopf korrekt ausgeblendet;
+// die Suche sah nur Sichtbares und griff zu „Neustart“ — „Start ist noch sichtbar“.
+function findeExakt(ziel) {
+  const z = norm(ziel);
+  if (!z) return [];
+  return [...document.querySelectorAll(`${FELDER},${KNOEPFE},[id],[data-cell],[data-id]`)].filter((el) =>
+    [el.id, el.getAttribute("aria-label"), el.title, beschriftung(el)].map(norm).filter(Boolean).includes(z));
 }
 const wertVon = (el) => {
   if (!el) return "";
@@ -506,8 +518,16 @@ async function szenario(schritte) {
       else if (s.art === "wert_enthaelt") { ok = norm(quelle).includes(erwartet); gefunden = kurz(quelle, 80); }
       else if (s.art === "speicher_enthaelt") { ok = norm(speicher()).includes(erwartet); gefunden = kurz(speicher(), 160); }
       else if (s.art === "keine_fehler") { const neu = (J.fehler || []).slice(fehlerStart); ok = !neu.length; gefunden = neu.map((f) => f.text).join("; ").slice(0, 160); }
-      else if (s.art === "sichtbar") { ok = sichtbar(el); gefunden = ok ? "sichtbar" : "unsichtbar"; }
-      else if (s.art === "unsichtbar") { ok = !el || !sichtbar(el); gefunden = ok ? "unsichtbar" : "sichtbar"; }
+      else if (s.art === "sichtbar") {
+        const exakt = findeExakt(s.ziel);
+        ok = exakt.length ? exakt.some(sichtbar) : sichtbar(el);
+        gefunden = ok ? "sichtbar" : "unsichtbar";
+      }
+      else if (s.art === "unsichtbar") {
+        const exakt = findeExakt(s.ziel);
+        ok = exakt.length ? !exakt.some(sichtbar) : (!el || !sichtbar(el));
+        gefunden = ok ? "unsichtbar" : "sichtbar";
+      }
       else if (s.art === "dauer_hoechstens") {
         const dauer = Math.round(performance.now() - messbeginn);
         messwerte[`dauer_ms_${i + 1}`] = dauer;

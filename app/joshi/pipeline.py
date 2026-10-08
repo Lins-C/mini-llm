@@ -100,6 +100,19 @@ def strom_fehler_voruebergehend(fehler: BaseException) -> bool:
     return bool(_VORUEBERGEHEND.search(text))
 
 
+GANZDATEI_MAX = 120_000
+
+
+def gesamtwertung(bericht: "pruefer.Pruefbericht") -> tuple[int, int, int, int]:
+    """Kleiner ist besser: Fehler, Inhaltsverlust, offene Pflichtpunkte, sonstige Befunde."""
+    ergebnisse = bericht.abnahme.get("ergebnisse") or []
+    offen = sum(1 for e in ergebnisse if e.get("pflicht") and e.get("status") != "PASS")
+    return (sum(b.art == "fehler" for b in bericht.befunde),
+            sum("kleiner als vorher" in b.text or "größten Teil" in b.text for b in bericht.befunde),
+            offen,
+            sum(b.art in AKZEPTANZ | {"warnung", "luecke"} for b in bericht.befunde))
+
+
 def nachweis_vergleich(vorherige: dict[str, Any] | None, bericht: "pruefer.Pruefbericht") -> tuple[int, int]:
     """Bestandene Pflichtpunkte (aktive Version, neuer Stand) — nur über dieselben Kriterien."""
     jetzt = {e.get("id"): e for e in bericht.abnahme.get("ergebnisse") or [] if e.get("pflicht")}
@@ -678,7 +691,10 @@ class Lauf:
                     await self.aenderung_vorbereiten(vorher)
                     if self.eingabe.web:
                         await self.recherche_ausfuehren(vorherige["html"])
-                html, vollstaendig = await self.aendern_mit_plan(self.recherche_html or vorherige["html"])
+                if self.art == "aendern" and self.eingabe.html:
+                    html, vollstaendig = await self.chat_fassung_uebernehmen()
+                else:
+                    html, vollstaendig = await self.aendern_mit_plan(self.recherche_html or vorherige["html"])
                 erwartet = []
                 if self.art == "aendern":
                     aenderungstext = self.linie["wunsch"] if self.linie else self.eingabe.text
@@ -687,6 +703,8 @@ class Lauf:
                 else:
                     aenderungstext = "Fehler behoben: " + self.eingabe.fehler[:300]
             html, bericht = await self.pruefen_und_reparieren(html, vollstaendig, erwartet)
+            if self.art == "aendern" and vorherige and any(gesamtwertung(bericht)[:3]):
+                html, bericht = await self.zweite_strategie(html, bericht, vorherige)
         except asyncio.CancelledError:
             await self.abbruch_vermerken()
             raise
@@ -696,6 +714,12 @@ class Lauf:
         except Umsetzungsfehler as fehler:
             if await self.retten(fehler.text, vorherige):
                 return
+            if self.art == "aendern" and vorherige and not self.eingabe.html:
+                ersatz = await self.ganzdatei_kandidat(vorherige, anlass=fehler.text)
+                if ersatz is not None:
+                    await self.abschliessen(*ersatz, self.linie["wunsch"] if self.linie else self.eingabe.text,
+                                            vorherige)
+                    return
             await self.scheitern(fehler.text, fehler.technik, vorher, ergebnis=bool(vorherige))
             return
         except RuntimeError as fehler:
@@ -706,6 +730,78 @@ class Lauf:
             await self.scheitern(str(fehler), "", vorher)
             return
         await self.abschliessen(html, bericht, aenderungstext, vorherige)
+
+    async def chat_fassung_uebernehmen(self) -> tuple[str, bool]:
+        """Der Chat hat die komplette Anwendung geschrieben: genau diese Fassung wird Kandidat.
+
+        Kein Nachbauen über Patches — geprüft, repariert und abgenommen wird sie
+        wie jeder andere Stand (Fortschrittssperre inklusive).
+        """
+        await self.status("building")
+        await self.schritt("erstellen", "aktiv", "Die Fassung aus dem Chat wird übernommen …")
+        await self.melde("hinweis", text=("Der Chat hat die komplette Anwendung schon geschrieben — JOSHI übernimmt "
+                                          "genau diese Fassung, prüft sie im Browser und repariert, was fehlt."))
+        self.patch = Patchbericht(status="aus_chat")
+        await self.schritt("erstellen", "fertig", f"Fassung aus dem Chat übernommen ({zahl(len(self.eingabe.html))} Zeichen)")
+        return self.eingabe.html, True
+
+    async def ganzdatei_kandidat(self, vorherige: dict[str, Any], anlass: str = ""
+                                 ) -> tuple[str, pruefer.Pruefbericht] | None:
+        """Zweite Strategie wie im Chat: die ganze Datei in einem Rutsch neu schreiben lassen.
+
+        08.10.2026, Kolibri Jump: Der Chat schrieb die komplette Datei mit derselben
+        Änderung fehlerfrei neu, JOSHIs Patches in 10 Projektdateien blieben offen.
+        Nur für Anwendungen bis GANZDATEI_MAX Zeichen und wenn das Fenster reicht.
+        """
+        basis = vorherige.get("html") or ""
+        if not basis or len(basis) > GANZDATEI_MAX:
+            return None
+        wunsch = self.wunsch or self.eingabe.text
+        nachrichten = self.mit_bildern(prompts.aendern_nachrichten(
+            basis, wunsch, zustand=self.produkt.get("zustand") or {}, material=self.eingabe.material,
+            bilder=prompts.bilder_text(self.eingabe.bilder, self.sieht_bilder), vollstaendig=True))
+        if not self.passt_ins_fenster(nachrichten, len(basis) + 4000):
+            return None
+        await self.melde("hinweis", text=("Es ist noch etwas offen — JOSHI lässt die Datei zusätzlich einmal komplett "
+                                          "neu schreiben (wie im Chat) und nimmt den nachweislich besseren Stand."))
+        await self.technik(f"Zweite Strategie (ganze Datei, {zahl(len(basis))} Zeichen)"
+                           + (f" — Anlass: {anlass[:160]}" if anlass else ""))
+        self.aktive_stufe = None
+        try:
+            text, grund = await self.generieren(nachrichten, "Ganze Datei wird neu geschrieben", basis=len(basis))
+            auszug = await self.vervollstaendigen(nachrichten, text, basis=len(basis), grund=grund)
+        except (Umsetzungsfehler, RuntimeError) as fehler:
+            await self.technik(f"Zweite Strategie ohne Ergebnis: {str(fehler)[:200]}")
+            return None
+        if not (auszug.html and auszug.vollstaendig):
+            await self.technik("Zweite Strategie ohne vollständige Datei")
+            return None
+        self.patch = Patchbericht(status="neu_geschrieben", grund=grund)
+        try:
+            neu, bericht = await self.pruefen_und_reparieren(auszug.html, True, [], max_reparaturen=1)
+        except (Umsetzungsfehler, RuntimeError) as fehler:
+            await self.technik(f"Zweite Strategie nicht prüfbar: {str(fehler)[:200]}")
+            return None
+        return neu, bericht
+
+    async def zweite_strategie(self, html: str, bericht: pruefer.Pruefbericht, vorherige: dict[str, Any]
+                               ) -> tuple[str, pruefer.Pruefbericht]:
+        """Vergleicht den bisherigen Kandidaten mit einem Ganzdatei-Kandidaten und nimmt den besseren."""
+        if self.eingabe.html:
+            return html, bericht
+        vollstaendig_vorher, patch_vorher = self.vollstaendig, self.patch
+        ersatz = await self.ganzdatei_kandidat(vorherige)
+        if ersatz is None:
+            self.vollstaendig, self.patch = vollstaendig_vorher, patch_vorher
+            return html, bericht
+        neu, neu_bericht = ersatz
+        if gesamtwertung(neu_bericht) < gesamtwertung(bericht):
+            await self.technik(f"Zweite Strategie ist besser ({neu_bericht.kurzfassung()}) — sie wird Ergebnis.")
+            await self.melde("hinweis", text="Die komplett neu geschriebene Fassung ist besser und wird übernommen.")
+            return neu, neu_bericht
+        await self.technik("Zweite Strategie nicht besser — der erste Kandidat bleibt.")
+        self.vollstaendig, self.patch = vollstaendig_vorher, patch_vorher
+        return html, bericht
 
     async def retten(self, grund: str, vorherige: dict[str, Any] | None) -> bool:
         """Ergebnisgarantie: Bricht eine gestufte Änderung später ab (Modelldienst,

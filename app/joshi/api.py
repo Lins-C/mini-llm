@@ -351,7 +351,10 @@ async def produkt_erstellen(
             # Der Chat bespricht ein bestehendes Produkt: Seine Vorschläge
             # werden zur nächsten Version, nicht zu einem neuen Produkt.
             wunsch = bruecke.aenderung_aus_chat(frage, antwort)
-            eingabe = Eingabe(text=wunsch)
+            # Hat der Chat die komplette Anwendung schon geschrieben, übernimmt JOSHI
+            # genau diese Fassung (08.10.2026, Kolibri Jump: vorher gekürzt als Text
+            # weitergereicht und in 7 Schritten nachgebaut — 244.000 Tokens, offen).
+            eingabe = Eingabe(text=wunsch, html=bruecke.html_im_chat(antwort))
             meta = {"text": wunsch, "dateien": [], "herkunft": "chat"}
             return await _starten(user["id"], vorhandenes, "aendern", eingabe, modell, meta)
     importiertes_html = bruecke.html_im_chat(antwort) if antwort else ""

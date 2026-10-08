@@ -230,6 +230,28 @@ kaputtPruefen("nach dem Ausfüllen");
 let reaktionKlick = false;
 let letzte = signatur();
 const klicks = [];
+// Größte Spiel-/Zeichenfläche — auch nach Klicks gemessen: Ein Spiel zeigt seine
+// Fläche oft erst nach „Start“ (08.10.2026, Kolibri Jump: beim Laden lag das
+// Startmenü obenauf, die Abnahme sah keinen Vollbild-Spielbereich).
+const vollbildMessen = () => {
+  let bestes = { breite: 0, hoehe: 0, element: "" };
+  for (const el of document.querySelectorAll("canvas, svg, main, video, [id*='game' i], [id*='spiel' i], [class*='game' i], [class*='spiel' i]")) {
+    const s = getComputedStyle(el);
+    if (s.display === "none" || s.visibility === "hidden" || Number(s.opacity) === 0) continue;
+    const r = el.getBoundingClientRect();
+    const b = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) / innerWidth * 100;
+    const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0)) / innerHeight * 100;
+    if (b * h > bestes.breite * bestes.hoehe) {
+      bestes = { breite: Math.round(b), hoehe: Math.round(h), element: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") };
+    }
+  }
+  return bestes;
+};
+let vollbild = vollbildMessen();
+const vollbildNachKlick = (knopfName) => {
+  const jetzt = vollbildMessen();
+  if (jetzt.breite * jetzt.hoehe > vollbild.breite * vollbild.hoehe) vollbild = { ...jetzt, nach: knopfName };
+};
 const erledigt = new Set();
 const reihenfolge = [...sortiert(knoepfe), ...Array(30).fill(null)];
 // Öffnet ein Klick eine Maske mit leeren Feldern („Route umplanen“ → Start,
@@ -345,6 +367,7 @@ for (let stelle = 0; stelle < reihenfolge.length && geklickt < 30; stelle++) {
     klicks.push(eintrag);
   }
   if (jetzt !== letzte) reaktionKlick = true;
+  try { vollbildNachKlick(name); } catch (e) { /* Messung ist Beiwerk */ }
   letzte = signatur();
   if (!kaputt.length) kaputtPruefen(`nach Klick auf „${beschriftung(knopf)}“`);
   if (folgeMasken < 6) {
@@ -383,6 +406,7 @@ return JSON.stringify({
     fehlerJeKnopf,
     kaputteWerte: kaputt,
     klicks,
+    vollbild,
   },
   fehler: (J.fehler || []),
   fehlerBeimLaden: fehlerVorher,

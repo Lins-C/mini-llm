@@ -571,6 +571,8 @@ def beweise_sammeln(gliederung: dict[str, Any], interaktion: dict[str, Any],
         "zahlen": {"felder": len(gliederung.get("felder") or []), "knoepfe": len(gliederung.get("knoepfe") or []),
                    **{k: v for k, v in (gliederung.get("anzahl") or {}).items() if k != "elemente"}},
     }
+    if (interaktion.get("vollbild") or {}).get("element"):
+        beweise["vollbild"] = {k: interaktion["vollbild"].get(k) for k in ("breite", "hoehe", "element", "nach")}
     if exporte:
         beweise["exporte"] = [{"typ": e.get("typ"), "ok": bool(e.get("ok")), "bytes": e.get("bytes", 0),
                                "grund": e.get("grund", "")} for e in exporte[:3]]
@@ -843,6 +845,10 @@ def _knopf_text(klick: dict[str, Any]) -> str:
     """Beschriftung plus Merkmale; ein Symbolknopf „(i)“ heißt „Info“."""
     text = f"{klick.get('knopf', '')} {klick.get('merkmal', '')}"
     text = re.sub(r"\(\s*[iℹⓘ]\s*\)|^\s*[iℹⓘ]\s*$", " info ", text)
+    # Symbolknöpfe heißen so, wie Menschen sie nennen (08.10.2026, Kolibri Jump:
+    # „Drei-Punkte-Symbol“ fand den Knopf „Menü öffnen (⋮)“ nicht).
+    text = re.sub(r"[⋮⋯…]|•••|\.\.\.", " drei punkte menü ", text)
+    text = re.sub(r"[☰≡]", " hamburger menü ", text)
     return _normal(text)
 
 
@@ -904,7 +910,7 @@ def _passende_klicks(kriterium: dict[str, Any], beweise: dict[str, Any]) -> list
     treffer = []
     for klick in beweise.get("klicks", []):
         name = klick.get("knopf", "")
-        if (muster and muster.search(name)) or any(_treffer(w, _normal(name)) for w in stichworte):
+        if (muster and muster.search(name)) or any(_treffer(w, _knopf_text(klick)) for w in stichworte):
             treffer.append(klick)
     return treffer
 
@@ -1039,11 +1045,27 @@ def _genannte_elemente(beschreibung: str) -> list[str]:
     return [t.strip(" „“\"'") for t in teile if 2 < len(t.strip()) < 40][:12]
 
 
+_VOLLBILD = re.compile(r"vollbild|full ?screen|ganzen? bildschirm|gesamten? bildschirm|ganze(?:n)? (?:fläche|"
+                       r"breite und höhe)|gesamte(?:n)? breite und höhe|bildschirmfüllend|randlos", re.IGNORECASE)
+
+
 def _gestaltung_pruefen(kriterium: dict[str, Any], beweise: dict[str, Any]) -> tuple[str, str, str] | None:
     messung = beweise.get("gestaltung")
     if not messung:
         return None
     text = " ".join([kriterium.get("beschreibung", ""), *(kriterium.get("stichworte") or [])]).lower()
+    vollbild = messung.get("vollbild") or {}
+    nach_klick = beweise.get("vollbild") or {}
+    if int(nach_klick.get("breite") or 0) * int(nach_klick.get("hoehe") or 0) > \
+            int(vollbild.get("breite") or 0) * int(vollbild.get("hoehe") or 0):
+        vollbild = nach_klick
+    if _VOLLBILD.search(text) and vollbild.get("element"):
+        breite, hoehe = int(vollbild.get("breite") or 0), int(vollbild.get("hoehe") or 0)
+        beleg = (f"{vollbild['element']} füllt {breite} % der Breite und {hoehe} % der Höhe"
+                 + (f" (nach Klick auf „{vollbild['nach']}“)" if vollbild.get("nach") else ""))
+        if breite >= 95 and hoehe >= 80:
+            return "erfuellt", beleg, "stil"
+        return "fehlt", beleg, ""
     farben = messung.get("farben") or {}
     genannt = [f for f, worte in _FARBWORTE.items() if any(re.search(rf"\b{w}", text) for w in worte)]
     if genannt and re.search(r"farbe|farben|color|colour|töne|ton\b|palette|akzent|design|gestalt", text):
