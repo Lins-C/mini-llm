@@ -255,9 +255,53 @@ function renderCloudUsageWindow(name, data, available) {
     : `${label} nicht verfügbar`);
 }
 
+function cloudUsageCount(value) {
+  const n = Math.max(0, Number(value) || 0);
+  return n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toLocaleString("de-DE", { maximumFractionDigits: 1 })}k` : String(n);
+}
+
+// Seit Oktober 2026 liefert Ollama keine Prozent-Grenzen mehr, nur Anfragezahlen.
+// Die Ringe zeigen dann Anfragen (24 h / 7 Tage); gefüllt im Verhältnis zum
+// stärksten Tag bzw. zum Wochenschnitt der letzten 30 Tage.
+function renderCloudRequests(payload) {
+  const daten = payload.anfragen || {};
+  const fenster = [
+    ["session", daten.tag, daten.spitze_tag, "24 h", "Anfragen in den letzten 24 Stunden"],
+    ["weekly", daten.woche, Math.max(daten.wochenschnitt || 0, daten.woche || 0), "7 Tage", "Anfragen in den letzten 7 Tagen"],
+  ];
+  fenster.forEach(([name, anzahl, bezug, beschriftung, lang]) => {
+    const ring = $(`#cloud-usage-${name}-ring`);
+    const wert = $(`#cloud-usage-${name}-value`);
+    const label = $(`#cloud-usage-${name}-label`);
+    if (!ring || !wert) return;
+    const anteil = bezug ? Math.min(100, Math.round((Number(anzahl) || 0) / bezug * 100)) : 0;
+    ring.style.setProperty("--usage", String(anteil));
+    ring.classList.remove("unavailable");
+    wert.textContent = cloudUsageCount(anzahl);
+    if (label) label.textContent = beschriftung;
+    ring.setAttribute("aria-label", `${lang}: ${Number(anzahl) || 0}`);
+    ring.title = `${lang}: ${(Number(anzahl) || 0).toLocaleString("de-DE")}`;
+  });
+  const note = $("#cloud-usage-note");
+  if (!note) return;
+  note.classList.remove("error");
+  const stamp = payload.fetched_at
+    ? new Date(Number(payload.fetched_at) * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
+    : "jetzt";
+  note.textContent = `Anfragen · Limits: ollama.com ↗ · ${stamp}`;
+}
+
 function renderCloudUsage(payload) {
   const note = $("#cloud-usage-note");
   const available = payload?.available === true;
+  if (available && payload.anfragen) {
+    renderCloudRequests(payload);
+    return;
+  }
+  ["session", "weekly"].forEach((name, i) => {
+    const label = $(`#cloud-usage-${name}-label`);
+    if (label) label.textContent = i ? "Woche" : "Sitzung";
+  });
   renderCloudUsageWindow("session", payload?.limits?.session, available);
   renderCloudUsageWindow("weekly", payload?.limits?.weekly, available);
   if (!note) return;

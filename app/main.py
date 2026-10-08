@@ -285,6 +285,34 @@ def parse_ollama_cloud_usage(payload: Any) -> dict[str, Any]:
     return {"session": window("session"), "weekly": window("weekly")}
 
 
+def _anfragen(payload: Any) -> tuple[int, list[int]]:
+    """(Summe, Anfragen je Abschnitt) aus dem neuen Nutzungsformat von ollama.com."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("totals"), dict):
+        raise ValueError("Ollama hat keine Nutzungszahlen zurückgegeben.")
+
+    def zahl(wert: Any) -> int:
+        try:
+            return max(0, int(wert or 0))
+        except (TypeError, ValueError):
+            return 0
+    abschnitte = [zahl(b.get("request_count")) for b in payload.get("buckets") or [] if isinstance(b, dict)]
+    return zahl(payload["totals"].get("request_count")), abschnitte
+
+
+def parse_ollama_cloud_anfragen(tag: Any, woche: Any, monat: Any) -> dict[str, Any]:
+    """Anfragen der letzten 24 Stunden und 7 Tage, mit Vergleichswerten für die Ringe."""
+    heute, _ = _anfragen(tag)
+    sieben, tage = _anfragen(woche)
+    dreissig, _ = _anfragen(monat)
+    return {
+        "tag": heute,
+        "woche": sieben,
+        "spitze_tag": max([heute, *tage]) if (heute or tage) else 0,
+        "wochenschnitt": round(dreissig / (30 / 7)) if dreissig else 0,
+        "verlauf": tage[-7:],
+    }
+
+
 async def ollama_cloud_usage(client: httpx.AsyncClient) -> dict[str, Any]:
     """Lädt die Cloud-Nutzung höchstens einmal je Cache-Intervall.
 
@@ -306,12 +334,9 @@ async def ollama_cloud_usage(client: httpx.AsyncClient) -> dict[str, Any]:
         cached = _cloud_usage_cache.get("payload")
         if cached is not None and now < float(_cloud_usage_cache["expires_at"]):
             return cached
+        kopf = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
         try:
-            response = await client.get(
-                OLLAMA_CLOUD_USAGE_URL,
-                headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-                timeout=8,
-            )
+            response = await client.get(OLLAMA_CLOUD_USAGE_URL, headers=kopf, timeout=8)
             if response.status_code in {401, 403}:
                 return {
                     "available": False,
@@ -319,12 +344,29 @@ async def ollama_cloud_usage(client: httpx.AsyncClient) -> dict[str, Any]:
                     "error": "Der Ollama-API-Schlüssel wurde nicht akzeptiert.",
                 }
             response.raise_for_status()
-            result = {
-                "available": True,
-                "configured": True,
-                "limits": parse_ollama_cloud_usage(response.json()),
-                "fetched_at": int(time.time()),
-            }
+            daten = response.json()
+            if isinstance(daten, dict) and isinstance(daten.get("limits"), dict):
+                result = {
+                    "available": True,
+                    "configured": True,
+                    "limits": parse_ollama_cloud_usage(daten),
+                    "fetched_at": int(time.time()),
+                }
+            else:
+                # Seit Oktober 2026 liefert ollama.com/api/usage keine Prozent-Grenzen
+                # mehr, nur Anfragezahlen je Zeitraum (range=24h|7d|30d). Die Anzeige
+                # zeigt dann Anfragen; die Grenzen stehen auf ollama.com/settings.
+                tag, monat = await asyncio.gather(
+                    client.get(OLLAMA_CLOUD_USAGE_URL, params={"range": "24h"}, headers=kopf, timeout=8),
+                    client.get(OLLAMA_CLOUD_USAGE_URL, params={"range": "30d"}, headers=kopf, timeout=8))
+                tag.raise_for_status()
+                monat.raise_for_status()
+                result = {
+                    "available": True,
+                    "configured": True,
+                    "anfragen": parse_ollama_cloud_anfragen(tag.json(), daten, monat.json()),
+                    "fetched_at": int(time.time()),
+                }
         except (httpx.HTTPError, ValueError, json.JSONDecodeError):
             result = {
                 "available": False,
