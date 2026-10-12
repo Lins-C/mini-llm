@@ -241,6 +241,17 @@ function cloudUsagePercentLabel(value) {
   return `${percent.toLocaleString("de-DE", { maximumFractionDigits: 1 })} %`;
 }
 
+/* Wann eine Grenze zurückgesetzt wird — wie auf ollama.com/settings:
+   „in 5 Min.“, „in 3 Std.“ oder ein Tag. */
+function cloudResetLabel(iso) {
+  const moment = iso ? new Date(iso) : null;
+  if (!moment || Number.isNaN(moment.getTime())) return "";
+  const minuten = Math.max(0, Math.round((moment.getTime() - Date.now()) / 60000));
+  if (minuten < 60) return `in ${Math.max(1, minuten)} Min.`;
+  if (minuten < 24 * 60) return `in ${Math.round(minuten / 60)} Std.`;
+  return moment.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
+}
+
 function renderCloudUsageWindow(name, data, available) {
   const ring = $(`#cloud-usage-${name}-ring`);
   const value = $(`#cloud-usage-${name}-value`);
@@ -248,11 +259,16 @@ function renderCloudUsageWindow(name, data, available) {
   const percent = cloudUsagePercent(data?.percent);
   ring.style.setProperty("--usage", String(available ? percent : 0));
   ring.classList.toggle("unavailable", !available);
+  // Ab 80 % warnt der Ring, bevor Ollama Anfragen ablehnt.
+  ring.classList.toggle("high", available && percent >= 80);
   value.textContent = available ? cloudUsagePercentLabel(percent) : "—";
   const label = name === "session" ? "Sitzungsnutzung" : "Wochennutzung";
-  ring.setAttribute("aria-label", available
-    ? `${label}: ${cloudUsagePercentLabel(percent)} verwendet`
-    : `${label} nicht verfügbar`);
+  const reset = available ? cloudResetLabel(data?.resets_at) : "";
+  const text = available
+    ? `${label}: ${cloudUsagePercentLabel(percent)} verwendet${reset ? ` · zurückgesetzt ${reset}` : ""}`
+    : `${label} nicht verfügbar`;
+  ring.setAttribute("aria-label", text);
+  ring.title = text;
 }
 
 function cloudUsageCount(value) {
@@ -276,7 +292,7 @@ function renderCloudRequests(payload) {
     if (!ring || !wert) return;
     const anteil = bezug ? Math.min(100, Math.round((Number(anzahl) || 0) / bezug * 100)) : 0;
     ring.style.setProperty("--usage", String(anteil));
-    ring.classList.remove("unavailable");
+    ring.classList.remove("unavailable", "high");
     wert.textContent = cloudUsageCount(anzahl);
     if (label) label.textContent = beschriftung;
     ring.setAttribute("aria-label", `${lang}: ${Number(anzahl) || 0}`);
@@ -317,9 +333,18 @@ function renderCloudUsage(payload) {
   const stamp = payload.fetched_at
     ? new Date(Number(payload.fetched_at) * 1000).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })
     : "jetzt";
-  note.textContent = models.length
-    ? `${models.length} Modelle · ${requests} Anfragen · ${stamp}`
-    : `Aktualisiert · ${stamp}`;
+  const sessionReset = cloudResetLabel(payload.limits?.session?.resets_at);
+  const weeklyReset = cloudResetLabel(payload.limits?.weekly?.resets_at);
+  const credit = Number(payload.limits?.guthaben_usd) || 0;
+  const creditText = credit > 0
+    ? ` · Guthaben ${credit.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`
+    : "";
+  note.title = `Stand ${stamp}`;
+  note.textContent = sessionReset || weeklyReset
+    ? `Reset ${sessionReset || "—"} · Woche ${weeklyReset || "—"}${creditText}`
+    : models.length
+      ? `${models.length} Modelle · ${requests} Anfragen · ${stamp}`
+      : `Aktualisiert · ${stamp}${creditText}`;
 }
 
 function stopCloudUsage() {

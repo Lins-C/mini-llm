@@ -64,6 +64,8 @@ class CloudUsageTests(unittest.TestCase):
 
         class Client:
             async def get(self, url, params=None, headers=None, timeout=None):
+                if url == main.OLLAMA_CLOUD_BALANCE_URL:
+                    return SimpleNamespace(status_code=404, json=lambda: {"error": "not found"})
                 daten = antworten[(params or {}).get("range")]
                 return SimpleNamespace(status_code=200, json=lambda: daten, raise_for_status=lambda: None)
 
@@ -74,6 +76,61 @@ class CloudUsageTests(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertEqual(result["anfragen"]["tag"], 12)
         self.assertEqual(result["anfragen"]["woche"], 40)
+
+    def test_balance_limits_are_shown_as_used_percent_with_reset(self):
+        """13.10.2026: ollama.com/settings zeigte 3,9 % und 0,7 % — /api/balance meldet den freien Rest."""
+        result = main.parse_ollama_cloud_balance({
+            "included": {
+                "session": {"remaining_percent": 96.09, "resets_at": "2026-10-12T23:00:00Z"},
+                "weekly": {"remaining_percent": 99.31, "resets_at": "2026-10-19T00:00:00Z"},
+            },
+            "purchased": {"balance_usd": 0},
+            "api_key": "must-never-leak",
+        })
+        self.assertEqual(result["session"]["percent"], 3.9)
+        self.assertEqual(result["weekly"]["percent"], 0.7)
+        self.assertEqual(result["session"]["resets_at"], "2026-10-12T23:00:00Z")
+        self.assertEqual(result["weekly"]["resets_at"], "2026-10-19T00:00:00Z")
+        self.assertNotIn("guthaben_usd", result)
+        self.assertNotIn("api_key", str(result))
+        mit_guthaben = main.parse_ollama_cloud_balance({
+            "included": {"session": {"remaining_percent": 0, "resets_at": "kaputt"},
+                         "weekly": {"remaining_percent": 40}},
+            "purchased": {"balance_usd": "12.5"},
+        })
+        self.assertEqual(mit_guthaben["session"]["percent"], 100.0)
+        self.assertEqual(mit_guthaben["session"]["resets_at"], "")
+        self.assertEqual(mit_guthaben["guthaben_usd"], 12.5)
+        with self.assertRaises(ValueError):
+            main.parse_ollama_cloud_balance({"purchased": {"balance_usd": 0}})
+
+    def test_the_endpoint_prefers_the_balance_limits(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        abgefragt = []
+
+        class Client:
+            async def get(self, url, params=None, headers=None, timeout=None):
+                abgefragt.append(url)
+                daten = {"included": {"session": {"remaining_percent": 90, "resets_at": "2026-10-12T23:00:00Z"},
+                                      "weekly": {"remaining_percent": 75, "resets_at": "2026-10-19T00:00:00Z"}}}
+                return SimpleNamespace(status_code=200, json=lambda: daten, raise_for_status=lambda: None)
+
+        main._cloud_usage_cache.update({"expires_at": 0.0, "payload": None})
+        with patch.dict(os.environ, {"OLLAMA_CLOUD_USAGE_API_KEY": "k"}, clear=False):
+            result = asyncio.run(main.ollama_cloud_usage(Client()))
+        main._cloud_usage_cache.update({"expires_at": 0.0, "payload": None})
+        self.assertEqual(abgefragt, [main.OLLAMA_CLOUD_BALANCE_URL], "Ein Aufruf genügt.")
+        self.assertEqual(result["limits"]["session"]["percent"], 10.0)
+        self.assertEqual(result["limits"]["weekly"]["percent"], 25.0)
+        self.assertNotIn("anfragen", result)
+
+    def test_the_widget_shows_resets_and_warns_when_high(self):
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / "static/app.js").read_text(encoding="utf-8")
+        self.assertIn("function cloudResetLabel", js)
+        self.assertIn('ring.classList.toggle("high", available && percent >= 80)', js)
 
     def test_a_separate_usage_key_wins_over_a_general_ollama_key(self):
         with patch.dict(os.environ, {

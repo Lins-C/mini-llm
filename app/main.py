@@ -14,6 +14,7 @@ import time
 import zipfile
 from collections import Counter
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
@@ -121,6 +122,10 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 # freiwillig einen separaten API-Schlüssel in .env hinterlegt hat. Der
 # Schlüssel verlässt den Server nie und wird niemals an den Browser gesendet.
 OLLAMA_CLOUD_USAGE_URL = "https://ollama.com/api/usage"
+# Seit dem 07.10.2026 stehen die Grenzen für Sitzung und Woche hier — als
+# verbleibender Anteil in Prozent mit Rücksetzzeitpunkt. /api/usage liefert
+# seitdem nur noch Anfragezahlen.
+OLLAMA_CLOUD_BALANCE_URL = "https://ollama.com/api/balance"
 OLLAMA_CLOUD_USAGE_CACHE_SECONDS = 90
 _cloud_usage_cache: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _cloud_usage_lock = asyncio.Lock()
@@ -286,6 +291,53 @@ def parse_ollama_cloud_usage(payload: Any) -> dict[str, Any]:
     return {"session": window("session"), "weekly": window("weekly")}
 
 
+def _zeitpunkt(value: Any) -> str:
+    """ISO-Zeitpunkt in UTC oder leer — nie ungeprüfter Text in die Oberfläche."""
+    try:
+        moment = datetime.fromisoformat(str(value or "").strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_ollama_cloud_balance(payload: Any) -> dict[str, Any]:
+    """Sitzungs- und Wochengrenze aus ollama.com/api/balance.
+
+    Ollama meldet, wie viel noch frei ist (``remaining_percent``). Angezeigt
+    wird wie auf ollama.com/settings der verbrauchte Anteil.
+    """
+    included = payload.get("included") if isinstance(payload, dict) else None
+    if not isinstance(included, dict):
+        raise ValueError("Ollama hat keine Nutzungsgrenzen zurückgegeben.")
+
+    def window(name: str) -> dict[str, Any]:
+        raw = included.get(name)
+        if not isinstance(raw, dict) or raw.get("remaining_percent") is None:
+            raise ValueError(f"Ollama hat keine Grenze für {name} zurückgegeben.")
+        try:
+            frei = float(raw["remaining_percent"])
+        except (TypeError, ValueError) as fehler:
+            raise ValueError("Ungültiger Nutzungswert.") from fehler
+        return {
+            "percent": round(max(0.0, min(100.0, 100.0 - frei)), 1),
+            "resets_at": _zeitpunkt(raw.get("resets_at")),
+            "models": [],
+        }
+
+    result: dict[str, Any] = {"session": window("session"), "weekly": window("weekly")}
+    purchased = payload.get("purchased")
+    if isinstance(purchased, dict):
+        try:
+            guthaben = float(purchased.get("balance_usd") or 0)
+        except (TypeError, ValueError):
+            guthaben = 0.0
+        if guthaben > 0:
+            result["guthaben_usd"] = round(guthaben, 2)
+    return result
+
+
 def _anfragen(payload: Any) -> tuple[int, list[int]]:
     """(Summe, Anfragen je Abschnitt) aus dem neuen Nutzungsformat von ollama.com."""
     if not isinstance(payload, dict) or not isinstance(payload.get("totals"), dict):
@@ -337,6 +389,32 @@ async def ollama_cloud_usage(client: httpx.AsyncClient) -> dict[str, Any]:
             return cached
         kopf = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
         try:
+            # Zuerst die Grenzen in Prozent — das, was ollama.com/settings zeigt.
+            bilanz = await client.get(OLLAMA_CLOUD_BALANCE_URL, headers=kopf, timeout=8)
+            if bilanz.status_code in {401, 403}:
+                return {
+                    "available": False,
+                    "configured": True,
+                    "error": "Der Ollama-API-Schlüssel wurde nicht akzeptiert.",
+                }
+            limits = None
+            if bilanz.status_code == 200:
+                try:
+                    limits = parse_ollama_cloud_balance(bilanz.json())
+                except (ValueError, json.JSONDecodeError):
+                    limits = None
+            if limits is not None:
+                result = {
+                    "available": True,
+                    "configured": True,
+                    "limits": limits,
+                    "fetched_at": int(time.time()),
+                }
+                _cloud_usage_cache.update({
+                    "expires_at": time.monotonic() + OLLAMA_CLOUD_USAGE_CACHE_SECONDS,
+                    "payload": result,
+                })
+                return result
             response = await client.get(OLLAMA_CLOUD_USAGE_URL, headers=kopf, timeout=8)
             if response.status_code in {401, 403}:
                 return {
