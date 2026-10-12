@@ -75,9 +75,9 @@ const SKILL_CATALOG = [
 const SKILL_IDS = new Set(SKILL_CATALOG.map((skill) => skill.id));
 const ANSWER_LENGTHS = [
   { id: "auto", label: "Auto", title: "Das Modell entscheidet über die Länge" },
-  { id: "short", label: "Kurz", title: "Höchstens 150 Wörter, ohne Einleitung" },
-  { id: "medium", label: "Mittel", title: "Rund 400 Wörter" },
-  { id: "long", label: "Lang", title: "Rund 900 Wörter mit Zwischenüberschriften" },
+  { id: "short", label: "Kurz", title: "Höchstens 150 Wörter, ohne Einleitung. Wörtliche Wiedergaben behalten die Länge der Quelle." },
+  { id: "medium", label: "Mittel", title: "Rund 400 Wörter. Wörtliche Wiedergaben behalten die Länge der Quelle." },
+  { id: "long", label: "Lang", title: "Rund 900 Wörter mit Zwischenüberschriften. Wörtliche Wiedergaben behalten die Länge der Quelle." },
 ];
 const ANSWER_DENSITIES = [
   { id: "tight", label: "Knapp", title: "Kurze Sätze, kein Füllwerk" },
@@ -1468,14 +1468,24 @@ function renderSkillSidebar() {
   const targetTitle = $("#skill-target-title");
   const targetPreview = $("#skill-target-preview");
   targetBox.classList.toggle("selected", Boolean(target));
+  // Ein Prompt wird neu ausgeführt, eine KI-Ausgabe umgearbeitet — das soll
+  // vor dem Klick klar sein, auch auf dem Knopf.
+  const promptTarget = Boolean(target) && target.role === "user" && !target.skillAction;
   if (target) {
-    targetTitle.textContent = target.role === "assistant" ? "KI-Ausgabe markiert" : "Dein Prompt markiert";
+    const attachments = promptTarget ? (target.fileNames || []).length : 0;
+    targetTitle.textContent = target.role === "assistant"
+      ? "KI-Ausgabe markiert"
+      : `Dein Prompt markiert${attachments ? ` · ${attachments === 1 ? "1 Anhang" : `${attachments} Anhänge`}` : ""}`;
     targetPreview.textContent = railSnippet(target);
   } else {
     targetTitle.textContent = "Noch nichts markiert";
     targetPreview.textContent = "Klicke im Chat auf einen Prompt oder eine KI-Ausgabe.";
   }
   const executeButton = $("#execute-skills");
+  const executeLabel = executeButton.querySelector("span");
+  if (executeLabel) {
+    executeLabel.textContent = promptTarget ? "Prompt mit Skills ausführen" : "Auf Auswahl anwenden";
+  }
   executeButton.disabled = state.generating
     || !target
     || selected.length === 0
@@ -1486,7 +1496,76 @@ function renderSkillSidebar() {
       ? "Mindestens einen Skill aktivieren"
       : sameTranslationLanguage
         ? "Der Inhalt ist bereits in der Zielsprache – bitte andere Sprache wählen"
-      : "Aktive Skills auf den markierten Inhalt anwenden";
+      : promptTarget
+        ? "Führt den markierten Prompt mit seinen Anhängen neu aus — in der Form der aktiven Skills"
+        : "Aktive Skills auf den markierten Inhalt anwenden";
+  renderComposerSkills(conversation, selected);
+}
+
+/* Was für jede Nachricht gilt, steht am Eingabefeld. 12.10.2026: „Bericht" und
+   „Mittel" blieben unbemerkt aktiv — eine Wiedergabe kam als Zusammenfassung,
+   die nächste Nachricht wäre ein Bericht geworden. */
+function renderComposerSkills(conversation, selected = normalizeChatSkills(conversation?.activeSkills)) {
+  const host = $("#composer-skills");
+  if (!host) return;
+  host.replaceChildren();
+  const length = normalizeAnswerLength(conversation?.answerLength);
+  const density = normalizeAnswerDensity(conversation?.answerDensity);
+  const chips = [];
+  selected.forEach((skillId) => {
+    const skill = SKILL_CATALOG.find((item) => item.id === skillId);
+    if (!skill) return;
+    chips.push({
+      label: skill.name,
+      title: `${skill.name} gilt für jede Nachricht — klicken zum Ausschalten`,
+      clear: () => toggleChatSkill(skillId),
+    });
+  });
+  if (length !== "auto") {
+    const entry = ANSWER_LENGTHS.find((item) => item.id === length);
+    chips.push({
+      label: `Umfang: ${entry?.label || length}`,
+      title: `${entry?.title || ""} Klicken setzt auf „Auto“ zurück.`.trim(),
+      clear: () => setAnswerShape("answerLength", "auto"),
+    });
+  }
+  if (density !== "balanced") {
+    const entry = ANSWER_DENSITIES.find((item) => item.id === density);
+    chips.push({
+      label: `Dichte: ${entry?.label || density}`,
+      title: `${entry?.title || ""} Klicken setzt auf „Normal“ zurück.`.trim(),
+      clear: () => setAnswerShape("answerDensity", "balanced"),
+    });
+  }
+  host.hidden = chips.length === 0;
+  if (!chips.length) return;
+  const intro = document.createElement("button");
+  intro.type = "button";
+  intro.className = "composer-skills-intro";
+  intro.textContent = "Gilt für jede Nachricht:";
+  intro.title = "Skills öffnen";
+  intro.addEventListener("click", openSkillsSidebar);
+  host.append(intro);
+  chips.forEach(({ label, title, clear }) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "composer-skill-chip";
+    chip.title = title;
+    chip.setAttribute("aria-label", title);
+    chip.innerHTML = '<span></span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"/></svg>';
+    chip.querySelector("span").textContent = label;
+    chip.addEventListener("click", clear);
+    host.append(chip);
+  });
+}
+
+function setAnswerShape(field, value) {
+  const chat = activeChat();
+  if (!chat) return;
+  chat[field] = value;
+  chat.updatedAt = Date.now();
+  saveWorkspace();
+  renderSkillSidebar();
 }
 
 function renderAnswerShape(conversation) {
@@ -1506,14 +1585,7 @@ function renderAnswerShape(conversation) {
       button.textContent = entry.label;
       button.title = entry.title;
       button.setAttribute("aria-pressed", String(entry.id === current));
-      button.addEventListener("click", () => {
-        const chat = activeChat();
-        if (!chat) return;
-        chat[field] = entry.id;
-        chat.updatedAt = Date.now();
-        saveWorkspace();
-        renderSkillSidebar();
-      });
+      button.addEventListener("click", () => setAnswerShape(field, entry.id));
       element.append(button);
     });
   });
@@ -1646,7 +1718,12 @@ function messageNodeById(messageId) {
 }
 
 function railSnippet(message) {
+  // Vorschau ohne Markdown-Zeichen: „# Titel **fett**" las sich als Rauschen.
   const text = (message.content || message.errorMessage || "")
+    .replace(/```[\s\S]*?```/g, " Code ")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-*+]|\d+\.)\s+/gm, "")
+    .replace(/[*_`~|]+/g, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
   if (text) return text.length > 150 ? `${text.slice(0, 150).trim()}…` : text;
@@ -2011,11 +2088,21 @@ function inlineMarkdown(text) {
     .replace(/`([^`\n]+)`/g, "<code>$1</code>")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    // Nackte Adressen, auch „[https://…]“, wie sie Modelle bei Webquellen
+    // gern schreiben, werden ebenfalls anklickbar.
+    .replace(/\[(https?:\/\/[^\s\]<]+)\](?!\()/g,
+      '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s<>()"]*[^\s<>()".,;:!?])/g,
+      '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>')
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
     .replace(/__([^_\n]+)__/g, "<strong>$1</strong>")
     .replace(/(^|[^\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>")
     .replace(/(^|[^\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>")
-    .replace(/\*\*|__/g, "");
+    .replace(/\*\*|__/g, "")
+    // Berichte markieren nicht belegte Aussagen mit „[unbelegt]“. Als Marke
+    // statt als roher Text fällt sie auf, ohne den Satz zu zerreißen.
+    .replace(/\s?\[unbelegt\]/gi,
+      ' <span class="claim-unbelegt" title="Diese Aussage ist nicht durch Quelle oder Material belegt">unbelegt</span>');
 }
 
 async function copyText(text, button, successLabel = "Kopiert") {
@@ -2779,9 +2866,15 @@ function renderResponseControls(node, message, isLatestAssistant) {
     && !(message.status === "error" && message.content.trim().startsWith("Fehler:"));
   if (!hasAnswer) return;
   if (message.artifact?.type === "letter") return;
+  // „Weiter" an einer fertigen Antwort ließ das Modell Neues erfinden
+  // (12.10.2026: Zusagen wie „Wir melden uns innerhalb von 48 Stunden").
+  // Angeboten wird es nur, wo die Antwort tatsächlich abgebrochen ist.
+  const unfinished = message.doneReason === "length"
+    || ["limit", "stopped", "error"].includes(message.status);
+  if (!unfinished) return;
   const continuation = responseControl(
     "Weiter",
-    "Antwort an dieser Stelle fortsetzen",
+    "Abgebrochene Antwort an dieser Stelle fortsetzen",
     `continue-response${message.doneReason === "length" ? " recommended" : ""}`,
     '<path d="M5 12h13M13 7l5 5-5 5"/>',
     () => continueAssistantMessage(message.id),
@@ -3438,6 +3531,8 @@ async function streamAssistantRequest({
   skillOptions = {},
   skillAction = false,
   contextIdsOverride = null,
+  auftragContextIds = [],
+  folgeContextIds = [],
 }) {
   resetTaskTokens();
   const previousStatus = assistantMessage.status;
@@ -3498,6 +3593,10 @@ async function streamAssistantRequest({
     "context_ids",
     JSON.stringify(contextIdsOverride ?? conversation.contextIds ?? []),
   );
+  // Anhänge dieses Auftrags (Wiederholen, Weiter, Skill auf einem Prompt) und
+  // der vorigen Nachricht (Folgefrage). Der Server prüft beide gegen das Konto.
+  data.append("auftrag_context_ids", JSON.stringify(auftragContextIds || []));
+  data.append("folge_context_ids", JSON.stringify(folgeContextIds || []));
   sentFiles.forEach((entry) => data.append("files", entry.file, fileLabel(entry)));
 
   let generatedText = "";
@@ -3574,6 +3673,10 @@ async function streamAssistantRequest({
           setProgress(event.message, event.current, event.total);
         } else if (event.type === "notice") {
           setProgress(event.message);
+        } else if (event.type === "bezug" && userMessage && Array.isArray(event.context_ids)) {
+          // Die Dateien, auf denen diese Antwort beruht — die nächste
+          // Folgefrage bekommt sie wieder mit.
+          userMessage.bezugContextIds = event.context_ids.filter((item) => typeof item === "string");
         } else if (event.type === "context" && event.context?.id) {
           conversation.contextIds = [...new Set([
             ...(conversation.contextIds || []),
@@ -3665,6 +3768,34 @@ async function streamAssistantRequest({
   }
 }
 
+function messageContextIds(message) {
+  return [...new Set([
+    ...(Array.isArray(message?.attachmentContextIds) ? message.attachmentContextIds : []),
+    ...(Array.isArray(message?.bezugContextIds) ? message.bezugContextIds : []),
+  ])];
+}
+
+/* Die Folgefrage erbt die Dateien der unmittelbar vorigen Nachricht.
+   12.10.2026: „ich wollte den gesamten Inhalt wort für wort" kam ohne das PDF
+   an — das Modell antwortete, das Dokument liege ihm nicht vor. */
+function folgeContextIds(conversation) {
+  const vorige = [...(conversation?.messages || [])].reverse()
+    .find((message) => message.role === "user");
+  return vorige && !vorige.skillAction ? messageContextIds(vorige) : [];
+}
+
+/* Ein Skill auf einem markierten Prompt führt den Prompt neu aus — mit seinen
+   Anhängen und dem Verlauf davor. Der Verlauf beim Wiederholen folgt dem. */
+function promptRerunHistory(conversation, userMessage, fallbackIndex) {
+  if (userMessage?.promptRerun) {
+    const sourceIndex = conversation.messages.findIndex(
+      (message) => message.id === userMessage.sourceMessageId,
+    );
+    if (sourceIndex >= 0) return historyFromMessages(conversation.messages.slice(0, sourceIndex));
+  }
+  return historyFromMessages(conversation.messages.slice(0, fallbackIndex));
+}
+
 async function retryAssistantMessage(messageId) {
   if (state.generating) return;
   const conversation = activeChat();
@@ -3693,17 +3824,22 @@ async function retryAssistantMessage(messageId) {
     model,
     priorHistory: userMessage.skillAction
       ? []
-      : historyFromMessages(conversation.messages.slice(0, userIndex)),
+      : promptRerunHistory(conversation, userMessage, userIndex),
     sentFiles,
     webEnabled: userMessage.skillAction ? false : userMessage.webEnabled === true,
-    skillIds: userMessage.skillAction
+    skillIds: userMessage.skillAction || userMessage.promptRerun
       ? userMessage.activeSkills
       : normalizeChatSkills(conversation.activeSkills),
-    skillOptions: userMessage.skillAction
+    skillOptions: userMessage.skillAction || userMessage.promptRerun
       ? userMessage.skillOptions
       : chatSkillOptions(conversation),
     skillAction: userMessage.skillAction === true,
     contextIdsOverride: userMessage.skillAction ? [] : null,
+    // Ohne diese Liste verlor „Wiederholen" die bereits hochgeladene Datei.
+    auftragContextIds: userMessage.skillAction || sentFiles.length ? [] : messageContextIds(userMessage),
+    folgeContextIds: userMessage.skillAction
+      ? []
+      : folgeContextIds({ messages: conversation.messages.slice(0, userIndex) }),
   });
 }
 
@@ -3729,7 +3865,8 @@ async function continueAssistantMessage(messageId) {
     prompt: (
       "Setze deine unmittelbar vorherige Antwort exakt an der letzten Stelle fort. "
       + "Wiederhole bereits Gesagtes nicht. Schließe offene Sätze, Listen, Tabellen oder Codeblöcke "
-      + "vollständig und konsistent ab."
+      + "vollständig und konsistent ab. Schreibe nur weiter, was Auftrag und Material hergeben — "
+      + "keine neuen Zusagen, Angebote, Fristen oder Absätze, die dort nicht stehen."
     ),
     model,
     priorHistory,
@@ -3741,6 +3878,8 @@ async function continueAssistantMessage(messageId) {
       : chatSkillOptions(conversation),
     skillAction: userMessage?.skillAction === true,
     contextIdsOverride: userMessage?.skillAction ? [] : null,
+    // Eine abgeschnittene Wiedergabe braucht die Quelle, um weiterzuschreiben.
+    auftragContextIds: userMessage?.skillAction ? [] : messageContextIds(userMessage),
   });
 }
 
@@ -3773,6 +3912,7 @@ async function sendMessage() {
   const sentFiles = folderAnalysis ? [] : [...state.files];
   const fileNames = sentFiles.map(fileLabel);
   const priorHistory = folderAnalysis ? [] : historyFromMessages(conversation.messages);
+  const followContextIds = folderAnalysis ? [] : folgeContextIds(conversation);
   const userMessage = {
     id: id(),
     role: "user",
@@ -3839,6 +3979,7 @@ async function sendMessage() {
     // Websuche und Bericht in einem Zug ausführen.
     skillIds: folderAnalysis ? [] : normalizeChatSkills(conversation.activeSkills),
     skillOptions: chatSkillOptions(conversation),
+    folgeContextIds: followContextIds,
   });
 }
 
@@ -3872,7 +4013,19 @@ async function executeSelectedSkills() {
   const skillNames = skillIds.map((skillId) =>
     SKILL_CATALOG.find((skill) => skill.id === skillId)?.name || skillId);
   const sourceLabel = sourceMessage.role === "assistant" ? "KI-Ausgabe" : "Prompt";
-  const actionLabel = `${skillNames.join(" + ")} auf markierte ${sourceLabel} anwenden`;
+  const actionLabel = sourceMessage.role === "assistant"
+    ? `${skillNames.join(" + ")} auf markierte KI-Ausgabe anwenden`
+    : `${skillNames.join(" + ")} auf markierten Prompt anwenden`;
+  // Ein markierter Prompt ist ein Auftrag, kein Material: Er wird mit seinen
+  // Anhängen neu ausgeführt, in der Form der Skills. 12.10.2026: „Bericht" auf
+  // „gib den inhalt wieder …" ergab 48.000 Zeichen über die Wortwahl und den
+  // Tippfehler des Prompts — das angehängte PDF war ausdrücklich ausgeschlossen.
+  if (sourceMessage.role === "user" && !sourceMessage.skillAction) {
+    await rerunPromptWithSkills(conversation, sourceMessage, {
+      actionLabel, model, skillIds, skillOptions,
+    });
+    return;
+  }
   const requestPrompt = (
     "Wende die aktiven Skills ausschließlich auf den nachfolgend markierten Inhalt an. "
     + "Ignoriere alle anderen Themen, Nachrichten, Anhänge und Dokumente dieses Chats. "
@@ -3949,6 +4102,76 @@ async function executeSelectedSkills() {
     skillOptions,
     skillAction: true,
     contextIdsOverride: [],
+  });
+  if ((assistantMessage.content || "").trim()) {
+    conversation.selectedMessageId = assistantMessage.id;
+    conversation.updatedAt = Date.now();
+    saveWorkspace();
+    updateSelectedMessageStyles();
+  }
+}
+
+async function rerunPromptWithSkills(conversation, sourceMessage, {
+  actionLabel, model, skillIds, skillOptions,
+}) {
+  const sourceIndex = conversation.messages.findIndex((message) => message.id === sourceMessage.id);
+  const sourceContextIds = messageContextIds(sourceMessage);
+  const userMessage = {
+    id: id(),
+    role: "user",
+    content: actionLabel,
+    requestPrompt: sourceMessage.requestPrompt || sourceMessage.content,
+    promptRerun: true,
+    sourceMessageId: sourceMessage.id,
+    fileNames: [...(sourceMessage.fileNames || [])],
+    model,
+    webEnabled: sourceMessage.webEnabled === true,
+    profileEnabled: sourceMessage.profileEnabled ?? conversation.profileEnabled === true,
+    personaMode: sourceMessage.personaMode || conversation.personaMode || "global",
+    chatPersona: sourceMessage.chatPersona ?? conversation.chatPersona ?? "",
+    activeSkills: skillIds,
+    skillOptions,
+    attachmentContextIds: sourceContextIds,
+  };
+  conversation.messages.push(userMessage);
+  conversation.history = historyFromMessages(conversation.messages);
+  addMessage("user", actionLabel, userMessage.fileNames, true, { message: userMessage });
+  const assistantMessage = {
+    id: id(),
+    role: "assistant",
+    content: "",
+    fileNames: [],
+    status: "generating",
+    errorMessage: "",
+    doneReason: "",
+    appliedSkills: skillIds,
+    sourceMessageId: sourceMessage.id,
+    profileEnabled: userMessage.profileEnabled,
+  };
+  conversation.messages.push(assistantMessage);
+  conversation.updatedAt = Date.now();
+  saveWorkspace();
+  renderSidebar();
+  const view = addMessage("assistant", "", [], true, {
+    message: assistantMessage,
+    isLatestAssistant: true,
+  });
+  renderMessageRail();
+  closeSkillsSidebar();
+  setProgress("Prompt wird mit den Skills neu ausgeführt");
+  await streamAssistantRequest({
+    conversation,
+    userMessage,
+    assistantMessage,
+    view,
+    prompt: userMessage.requestPrompt,
+    model,
+    priorHistory: historyFromMessages(conversation.messages.slice(0, Math.max(0, sourceIndex))),
+    sentFiles: [],
+    webEnabled: userMessage.webEnabled,
+    skillIds,
+    skillOptions,
+    auftragContextIds: sourceContextIds,
   });
   if ((assistantMessage.content || "").trim()) {
     conversation.selectedMessageId = assistantMessage.id;

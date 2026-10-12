@@ -1931,3 +1931,43 @@ img.welcome-mark { padding: 0; background: none; object-fit: cover; border-radiu
 .made-by:hover { opacity: 1; text-decoration: underline; }
 @media (max-width: 700px) { .made-by { bottom: 2px; right: 8px; font-size: 9px; } }
 @media print { .made-by { display: none; } }
+
+/* Nicht belegte Aussage in Berichten */
+.claim-unbelegt {
+  display: inline-block; margin-left: 2px; padding: 0 6px; border-radius: 999px;
+  font-size: 10.5px; font-weight: 600; line-height: 1.6; vertical-align: 1px;
+  color: #8a5a00; background: color-mix(in srgb, #e0a100 16%, transparent);
+  border: 1px solid color-mix(in srgb, #e0a100 35%, transparent); cursor: help;
+}
+@media (prefers-color-scheme: dark) {
+  .claim-unbelegt { color: #f0c463; }
+}
+
+/* Am Eingabefeld: was für jede Nachricht gilt */
+.composer-skills {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 0 4px 8px; font-size: 12px;
+}
+.composer-skills[hidden] { display: none; }
+.composer-skills-intro {
+  border: 0; padding: 2px 2px; background: transparent; color: var(--muted);
+  font-size: 12px; cursor: pointer;
+}
+.composer-skills-intro:hover { color: var(--text); text-decoration: underline; }
+.composer-skill-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px 0 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+  color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.composer-skill-chip svg {
+  width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2.2;
+  stroke-linecap: round; opacity: .55;
+}
+.composer-skill-chip:hover { border-color: var(--danger); color: var(--danger); }
+.composer-skill-chip:hover svg { opacity: 1; }
+@media (max-width: 760px) {
+  /* Auf dem Handy eine Zeile, seitlich wischbar — die Antwort braucht die Höhe. */
+  .composer-skills { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 2px 6px; }
+  .composer-skills::-webkit-scrollbar { display: none; }
+  .composer-skills > * { flex: 0 0 auto; }
+}

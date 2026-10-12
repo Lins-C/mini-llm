@@ -342,16 +342,34 @@ def normalize_skill_options(value: Any) -> dict[str, str]:
     return {"translation_language": language, "length": length, "density": density}
 
 
-def answer_shape_system_prompt(skill_options: Any = None) -> str:
+# Eine Wiedergabe hat die Länge ihrer Quelle. 12.10.2026: „gib den inhalt
+# wieder" zu einem fünfseitigen PDF kam bei „Mittel" (rund 400 Wörter) als
+# knappe Zusammenfassung zurück.
+WIEDERGABE = re.compile(
+    r"(?i)\b(?:wort\s+für\s+wort|wörtlich\w*|im\s+(?:original)?wortlaut|wortgetreu\w*|"
+    r"originalgetreu\w*|abschreib\w*|abzuschreiben|nieder(?:zu)?(?:schreib\w*)?|"
+    r"(?:gesamt|ganz|komplett|vollständig)\w*\s+(?:inhalt\w*|text\w*|wortlaut|dokument\w*)|"
+    r"gib\s+(?:\S+\s+){0,5}?wieder|wiederzugeben|wiedergeb\w*)\b"
+)
+
+
+def ist_wiedergabe(prompt: str) -> bool:
+    """Verlangt der Auftrag den Inhalt vollständig statt verdichtet?"""
+
+    return bool(WIEDERGABE.search(prompt or ""))
+
+
+def answer_shape_system_prompt(skill_options: Any = None, wiedergabe: bool = False) -> str:
     """Umfang und Dichte als eigener, kurzer Vertrag.
 
     Steht getrennt von den Skills, weil beides auch ohne Skill gilt — und weil
-    die Vorgaben nichts zum Prompt beitragen sollen.
+    die Vorgaben nichts zum Prompt beitragen sollen. Bei einer Wiedergabe
+    entfällt die Längenvorgabe: Dort bestimmt die Quelle den Umfang.
     """
 
     options = normalize_skill_options(skill_options)
     directives = [
-        ANSWER_LENGTHS[options["length"]][1],
+        "" if wiedergabe else ANSWER_LENGTHS[options["length"]][1],
         ANSWER_DENSITIES[options["density"]][1],
     ]
     directives = [item for item in directives if item]
@@ -448,14 +466,55 @@ REPORT_PLAN = {
     "long": {"sections": 12, "pages": 40, "words": 1200},
 }
 REPORT_MIN_MATERIAL = 900   # Zeichen belegtes Material für die größte Stufe
+# Ein Bericht über vorhandenen Stoff — ein Dokument, eine Markierung — darf
+# nicht länger werden, als der Stoff trägt. 12.10.2026: „Bericht" mit „Mittel"
+# auf einen markierten 80-Zeichen-Prompt ergab fünf Kapitel mit je 1.100
+# Wörtern, 43.476 Tokens Wortstreckung über einen Tippfehler.
+ZEICHEN_JE_WORT = 6.5
+STOFF_FAKTOR = {"auto": 1.0, "short": 0.6, "medium": 1.0, "long": 2.0}
+KETTE_AB_WOERTERN = 1600
+
+
+def _an_stoff_binden(plan: dict[str, int], stufe: str, material_chars: int) -> dict[str, int] | None:
+    """Kürzt Kapitelzahl und -länge auf das, was der Stoff hergibt."""
+
+    hoechstens = int(material_chars / ZEICHEN_JE_WORT * STOFF_FAKTOR.get(stufe, 1.0))
+    if hoechstens < KETTE_AB_WOERTERN:
+        return None
+    kapitel = max(3, min(plan["sections"], hoechstens // 450))
+    plan = dict(plan)
+    plan["sections"] = kapitel
+    plan["words"] = max(350, min(plan["words"], hoechstens // kapitel))
+    return plan
 
 
 def report_plan(
     length: str, material_chars: int = 0, auf_auswahl: bool = False,
+    quellgebunden: bool = False,
 ) -> dict[str, int] | None:
-    """Wie viele Kapitel und wie lang. ``None`` heißt: ein einziger Aufruf reicht."""
+    """Wie viele Kapitel und wie lang. ``None`` heißt: ein einziger Aufruf reicht.
 
-    stufe = (length or "").strip().lower()
+    ``quellgebunden``: Der Bericht gilt einem vorhandenen Dokument. Dann ist
+    die gewählte Stufe eine Obergrenze, der Stoff bestimmt den Umfang. Eine
+    Markierung ist immer quellgebunden.
+    """
+
+    gewaehlt = (length or "").strip().lower()
+    plan = _report_plan_stufe(gewaehlt, material_chars, auf_auswahl)
+    if plan and (quellgebunden or auf_auswahl):
+        stufe = plan.get("stufe", "auto")
+        plan = _an_stoff_binden(
+            plan, gewaehlt if gewaehlt in STOFF_FAKTOR else "auto", material_chars,
+        )
+        if plan:
+            plan["stufe"] = stufe
+            plan["quellgebunden"] = 1
+    return plan
+
+
+def _report_plan_stufe(
+    stufe: str, material_chars: int, auf_auswahl: bool,
+) -> dict[str, int] | None:
     if stufe == "auto" and auf_auswahl:
         # Ein Bericht über eine markierte Antwort steht im Verhältnis zu ihr.
         # Zu einer Seite mit 17.800 Zeichen Quelltext entstanden zwölf Kapitel
@@ -537,6 +596,15 @@ BELEGREGELN_OHNE_QUELLEN = (
 )
 
 
+BELEGREGELN_MATERIAL = (
+    "Grundlage ist ausschließlich das bereitgestellte Material — ein Dokument oder "
+    "ein markierter Inhalt. Übernimm Aussagen, Zahlen und Namen nur daraus und "
+    "erfinde keine Quellen, Zusagen, Fristen oder Beispiele. Eine Einordnung, die "
+    "nicht im Material steht, aber für das Verständnis nötig ist, kennzeichnest du "
+    "mit „[unbelegt]“. Was das Material nicht hergibt, lässt du weg."
+)
+
+
 def report_outline_prompt(
     topic: str, plan: dict[str, int], material: str, grenze: int = 12000,
 ) -> list[dict[str, str]]:
@@ -577,7 +645,19 @@ def report_section_prompt(
     has_sources: bool = True,
     grenze: int = 14000,
 ) -> list[dict[str, str]]:
-    """Ein Aufruf je Kapitel."""
+    """Ein Aufruf je Kapitel.
+
+    Belegt wird mit nummerierten Quellen, wenn es welche gibt. Ein Bericht über
+    ein Dokument hat keine Quellenliste, aber Material — dort hieß es bisher
+    „schreibe aus gesichertem Allgemeinwissen“.
+    """
+
+    if has_sources:
+        belege = BELEGREGELN
+    elif plan.get("quellgebunden"):
+        belege = BELEGREGELN_MATERIAL
+    else:
+        belege = BELEGREGELN_OHNE_QUELLEN
 
     abschnitt = outline[index]
     folgende = ", ".join(item["titel"] for item in outline[index + 1 :][:6])
@@ -590,7 +670,7 @@ def report_section_prompt(
                 "Markdown-Überschrift der zweiten Ebene und schreibe ihn vollständig "
                 "aus — Fließtext, keine Stichpunkte als Ersatz für Sätze, keine "
                 "Ankündigung dessen, was du gleich schreibst.\n"
-                + (BELEGREGELN if has_sources else BELEGREGELN_OHNE_QUELLEN)
+                + belege
                 + (f"\n{density_directive}" if density_directive else "")
             ),
         },
@@ -600,7 +680,9 @@ def report_section_prompt(
                 f"Thema des Berichts: {topic}\n"
                 f"Abschnitt {index + 1} von {len(outline)}: {abschnitt['titel']}\n"
                 f"Aufgabe dieses Abschnitts: {abschnitt.get('inhalt', '')}\n"
-                f"Zielumfang: rund {plan['words']} Wörter.\n\n"
+                f"Zielumfang: höchstens rund {plan['words']} Wörter. Trägt das Material "
+                "weniger, bleibt der Abschnitt kürzer — nie mit Wiederholungen, "
+                "Wortdeutungen oder Betrachtungen über den Auftrag strecken.\n\n"
                 f"Belegtes Material:\n{material[:grenze]}\n\n"
                 + (f"Ende des vorherigen Abschnitts (nur zum Anschluss, nicht "
                    f"wiederholen):\n{previous_tail[-1200:]}\n\n" if previous_tail else "")
