@@ -49,6 +49,14 @@ def ist_abgeschnitten(grund: str | None) -> bool:
 
 @dataclass(frozen=True)
 class Grenzen:
+    # Gemeinsames Budget aller Builder-/Reparaturströme eines Auftrags.
+    # Browserabnahme und Sicherung der Checkpoints bleiben danach möglich.
+    auftrag_modellsekunden: int = 600
+    auftrag_generierungen: int = 16
+    auftrag_ausgabetokens: int = 120_000
+    projekt_kontextzeichen: int = 30_000
+    projekt_kontextdateien: int = 4
+    struktur_sekunden: int = 60
     # Ausgabe im Verhältnis zur aktiven Anwendung (Zeichen).
     weich_faktor: float = 4.0
     hart_faktor: float = 10.0

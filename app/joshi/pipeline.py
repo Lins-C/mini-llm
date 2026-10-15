@@ -31,7 +31,7 @@ from typing import Any
 
 from app import database
 from app.joshi import (abnahme, aenderung, dateien, grenzen, projekt, projektdateien, prompts, pruefer, recherche,
-                        speicher)
+                        speicher, workers, agenten)
 from app.joshi.html_werk import (
     _ANFANG,
     Auszug,
@@ -44,6 +44,7 @@ from app.joshi.html_werk import (
     fortsetzung_anfuegen,
     html_aus_antwort,
     json_aus_antwort,
+    laufzeit_dokument,
     titel_aus_html,
 )
 from app.joshi.jobs import Auftrag
@@ -250,12 +251,16 @@ class Lauf:
         # Daran entscheidet sich, ob ein Kandidat aktiv werden darf.
         self.vertrag: dict[str, Any] = {}
         self.baseline: dict[str, Any] = {}
+        self.inhaltsbasis: dict[str, Any] = {}
         # Änderungslinie: Root-Auftrag, Versuch, Wunsch für das Modell.
         self.linie: dict[str, Any] | None = None
         self.protokoll: aenderung.Versuchsprotokoll | None = None
         self.wunsch = ""
         self.gestuft = False
         self.grenzen = grenzen.Grenzen.aus_umgebung()
+        self.builder_sekunden = 0.0
+        self.builder_aufrufe = 0
+        self.review_verwendet = False
         self.signale: list[grenzen.Signal] = []
         self.patch: Patchbericht | None = None
         self.ausgabe_zeichen = 0
@@ -404,7 +409,11 @@ class Lauf:
         ergebnis: Any = None
         erhalten = False
         try:
-            ergebnis = await aufruf
+            try:
+                ergebnis = await asyncio.wait_for(aufruf, timeout=self.grenzen.struktur_sekunden)
+            except asyncio.TimeoutError as fehler:
+                raise RuntimeError("Der Planungs-/Prüfaufruf hat sein Zeitbudget erreicht; "
+                                   "JOSHI beendet ihn und erhält den bisherigen Stand.") from fehler
             erhalten = True
             return ergebnis
         finally:
@@ -439,6 +448,18 @@ class Lauf:
             await self.melde("hinweis", text=signal.text + " JOSHI behält sie im Blick.")
 
     # -------------------------------------------------------------- Modell
+    def builder_budget_pruefen(self, laufzeit: float = 0.0, zeichen: int = 0) -> None:
+        stand = self.tokenwerte(zeichen=zeichen)
+        verbraucht = int(stand["tokens"])
+        g = self.grenzen
+        if (self.builder_sekunden + laufzeit >= g.auftrag_modellsekunden
+                or self.builder_aufrufe > g.auftrag_generierungen
+                or verbraucht >= g.auftrag_ausgabetokens):
+            raise Grenzfall(
+                "Das Arbeitsbudget dieses Auftrags ist erreicht. JOSHI prüft den gesicherten Stand und nennt offene Punkte.",
+                f"Builder: {self.builder_aufrufe} Aufrufe, {self.builder_sekunden + laufzeit:.0f} s, "
+                f"{verbraucht} bestätigte/geschätzte Ausgabetokens", art="budget")
+
     async def generieren(self, nachrichten: list[dict[str, Any]], fortschritt: str,
                          temperatur: float = 0.2, *, basis: int = 0, bloecke: bool = False) -> tuple[str, str]:
         dauer_vorher = self.verbrauch["eval_duration_ns"]
@@ -447,9 +468,15 @@ class Lauf:
             stufe = f"Schritt {self.aktive_stufe['nummer']}" if self.aktive_stufe else ""
             for versuch in range(len(STROM_WIEDERHOLUNG) + 1):
                 try:
-                    return await self._generieren(
-                        nachrichten, fortschritt, temperatur,
-                        grenzen.Waechter(basis, bloecke=bloecke, grenzen=self.grenzen, stufe=stufe))
+                    self.builder_aufrufe += 1
+                    self.builder_budget_pruefen()
+                    beginn = time.monotonic()
+                    try:
+                        return await self._generieren(
+                            nachrichten, fortschritt, temperatur,
+                            grenzen.Waechter(basis, bloecke=bloecke, grenzen=self.grenzen, stufe=stufe))
+                    finally:
+                        self.builder_sekunden += time.monotonic() - beginn
                 except RuntimeError as fehler:
                     if not strom_fehler_voruebergehend(fehler) or versuch >= len(STROM_WIEDERHOLUNG):
                         raise
@@ -489,6 +516,7 @@ class Lauf:
             Ein großer einzelner Chunk konnte deshalb fertig sein, bevor sein
             Output- oder Blocklimit überhaupt geprüft wurde.
             """
+            self.builder_budget_pruefen(jetzt - beginn, 0 if gezaehlt else zeichen + denken)
             signal = waechter.pruefen("".join(teile), jetzt - beginn, denken)
             while signal is not None:
                 await self.signal(signal)
@@ -512,7 +540,8 @@ class Lauf:
                 # Generator zu canceln.  Daher wird der nächste Chunk als Task
                 # abgewartet; ein Timeout prüft nur den Wächter und lässt den
                 # Stream weiterlaufen.
-                zeitpunkte = [STILLSTAND_SEKUNDEN, waechter.hart_sekunden]
+                zeitpunkte = [STILLSTAND_SEKUNDEN, waechter.hart_sekunden,
+                              max(0.01, self.grenzen.auftrag_modellsekunden - self.builder_sekunden)]
                 if "dauer:weich" not in waechter.gemeldet:
                     zeitpunkte.append(waechter.weich_sekunden)
                 naechster = min((punkt for punkt in zeitpunkte if punkt > vergangen), default=0.01)
@@ -689,6 +718,27 @@ class Lauf:
                 self.baseline = (vorherige.get("pruefung") or {}).get("gliederung") or {}
                 if self.art == "aendern":
                     await self.aenderung_vorbereiten(vorher)
+                    if any(workers.inhaltspruefung(k, {}) is not None
+                           for k in self.vertrag.get("kriterien") or []):
+                        # Alte Versionen enthalten diese Messwerte noch nicht.
+                        # Ausgangsfassung neu vermessen, bevor der Builder sie ändert.
+                        try:
+                            ursprung = vorherige
+                            if self.linie and self.linie.get("basis") and self.linie["basis"] != vorher:
+                                ursprung = await asyncio.to_thread(speicher.version, self.produkt["id"],
+                                                                  self.linie["basis"]) or vorherige
+                            assets = await asyncio.to_thread(speicher.bild_data_uris, self.produkt["id"])
+                            messung = await pruefer.renderer.rendern(
+                                laufzeit_dokument(ursprung["html"], modus="pruefung",
+                                                  zustand=self.produkt.get("zustand"), assets=assets),
+                                probe=pruefer.renderer.pruefskript(), breite=1280, hoehe=900)
+                            if messung.ok and isinstance(messung.probe, dict):
+                                p = messung.probe
+                                self.inhaltsbasis = ((p.get("interaktion") or {}).get("leseinhalt")
+                                                     or (p.get("vorher") or {}).get("leseinhalt") or {})
+                            await self.technik("Inhalts-Worker: Ausgangsfassung im Browser vermessen")
+                        except pruefer.renderer.RendererFehlt:
+                            await self.technik("Inhalts-Worker: Ausgangsmessung nicht verfügbar")
                     if self.eingabe.web:
                         await self.recherche_ausfuehren(vorherige["html"])
                 if self.art == "aendern" and self.eingabe.html:
@@ -788,6 +838,16 @@ class Lauf:
                                ) -> tuple[str, pruefer.Pruefbericht]:
         """Vergleicht den bisherigen Kandidaten mit einem Ganzdatei-Kandidaten und nimmt den besseren."""
         if self.eingabe.html:
+            return html, bericht
+        if self.gestuft:
+            await self.technik("Auftrag bereits schrittweise bearbeitet; kein zusätzlicher kompletter Neubau")
+            return html, bericht
+        try:
+            self.builder_budget_pruefen()
+        except Grenzfall:
+            return html, bericht
+        if not bericht.reparaturbedarf():
+            await self.technik("Prüf-Worker: Nur Grenzen der Nachweisbarkeit offen; keine weitere Neuschreibung")
             return html, bericht
         vollstaendig_vorher, patch_vorher = self.vollstaendig, self.patch
         ersatz = await self.ganzdatei_kandidat(vorherige)
@@ -1202,6 +1262,8 @@ class Lauf:
             kriterium = arten.get(e.get("id"), {})
             if kriterium.get("nachweis") != "gestaltung" or str(e.get("beleg") or "") in {"stil", "mobil"}:
                 return []
+            if workers.layoutpruefung(kriterium, {}) or workers.knopfpruefung(kriterium, {}):
+                return []
             # Messbare Gestaltung (Farben, Glas, Schatten, Handybreite) bleibt verbindlich.
             if abnahme._gestaltung_pruefen(kriterium, {"gestaltung": {"farben": {}, "glas": 0, "transparent": 0,
                                                                      "schatten": 0}}) \
@@ -1456,7 +1518,9 @@ class Lauf:
                                        gestuft: bool) -> tuple[str, bool, str]:
         """Bearbeitet große Apps dateiweise; Browserprüfung bleibt beim Aufrufer."""
         fenster = self.zugang.fenster(self.modell)
-        if fenster < 12_000:
+        # Die Gesamtgröße des Produkts ist nicht die nötige Kontextgröße:
+        # kleine Modelle bekommen ausgewählte Dateien statt der ganzen App.
+        if fenster < 4_096:
             raise Umsetzungsfehler(
                 f"Die Anwendung ist zu groß für das Kontextfenster dieses Modells ({zahl(fenster)} Tokens). "
                 "Wähle ein Cloud-Modell oder stelle in der Ollama-App ein größeres Kontextfenster ein.",
@@ -1474,15 +1538,17 @@ class Lauf:
             )
 
         uebersicht = projektdateien.uebersicht(basis)
-        reihe = projektdateien.rangfolge(basis, wunsch)
+        fokus = wunsch.split("JETZT NUR SCHRITT", 1)[-1].split("Bereits umgesetzt und geprüft", 1)[0]
+        reihe = agenten.KontextWorker.ordnen(basis.alle(), projektdateien.rangfolge(basis, fokus))
         fenster_zeichen = fenster * ZEICHEN_JE_TOKEN
-        budget = max(0, int((fenster_zeichen - 9_000) / 2))
+        budget = min(self.grenzen.projekt_kontextzeichen, max(0, int((fenster_zeichen - 9_000) / 2)))
         material = self.eingabe.material[:min(12_000, max(1_200, int(fenster_zeichen * 0.15)))]
         gewaehlt: list[str] = []
         nachrichten: list[dict[str, Any]] = []
         ausgabe_reserve = 0
         while budget >= 1200:
-            gewaehlt = projektdateien.auswahl_begrenzen(basis, reihe, budget)
+            gewaehlt = projektdateien.auswahl_begrenzen(
+                basis, reihe, budget, max_dateien=self.grenzen.projekt_kontextdateien)
             if not gewaehlt:
                 break
             inhalte = {name: basis.alle()[name] for name in gewaehlt}
@@ -1528,6 +1594,29 @@ class Lauf:
 
         text, grund = await self.generieren(self.mit_bildern(nachrichten), fortschritt,
                                             basis=len(html), bloecke=True)
+        if not grenzen.ist_abgeschnitten(grund):
+            try:
+                lesen = projektdateien.leseanfrage(text, basis)
+            except projektdateien.ProjektFehler as fehler:
+                raise Grenzfall("Die Dateianfrage war nicht zulässig.", str(fehler), art="konflikt") from fehler
+            if lesen:
+                gewaehlt = projektdateien.auswahl_begrenzen(
+                    basis, [*lesen, *gewaehlt], budget, max_dateien=self.grenzen.projekt_kontextdateien)
+                if not set(lesen).issubset(gewaehlt):
+                    raise Grenzfall("Die angeforderten Dateien passen nicht gemeinsam ins Arbeitsfenster.",
+                                    "READ_CONTEXT_BUDGET: " + ", ".join(lesen), art="konflikt")
+                nachrichten = prompts.projektdateien_nachrichten(
+                    uebersicht, {n: basis.alle()[n] for n in gewaehlt},
+                    wunsch + "\nDie angeforderten Dateien sind jetzt enthalten. Liefere jetzt die Änderung; keine weitere Leseanfrage.",
+                    zustand=self.produkt.get("zustand") or {}, material=material,
+                    bilder=prompts.bilder_text(self.eingabe.bilder, self.sieht_bilder))
+                reserve = min(max(7000, sum(len(basis.alle()[n]) for n in gewaehlt) + 1500),
+                              max(7000, int(fenster_zeichen * .42)))
+                if not self.passt_ins_fenster(nachrichten, reserve):
+                    raise Grenzfall("Die Dateianfrage überschreitet das Kontextfenster.", "READ_CONTEXT_WINDOW", art="konflikt")
+                await self.technik("Datei-Worker liest gezielt: " + ", ".join(lesen))
+                text, grund = await self.generieren(self.mit_bildern(nachrichten),
+                                                    "Gezielte Änderung nach Dateiprüfung", basis=len(html), bloecke=True)
         if grenzen.ist_abgeschnitten(grund):
             self.patch = Patchbericht(status="abgeschnitten", grund=grund)
             raise Grenzfall(grenzen.LIMIT_TEXT,
@@ -1810,11 +1899,11 @@ class Lauf:
                 self.pruefe_abbruch()
                 stufe = stufen[index]
                 nummer = index + 1
-                if ruht(stufe):
+                if ruht(stufe) or not stufe.get("kriterien"):
                     if self.protokoll:
                         self.protokoll.stufen.append({"nummer": nummer, "titel": stufe["titel"],
                                                       "ergebnis": "zurueckgestellt", "zustand": "deferred"})
-                    await self.technik(f"Schritt {nummer} („{stufe['titel']}“) übersprungen: alle Kriterien zurückgestellt")
+                    await self.technik(f"Schritt {nummer} („{stufe['titel']}“) übersprungen: kein aktives Abnahmekriterium")
                     continue
                 self.stufe_text = f"{nummer}/{von}"
                 self.aktive_stufe = {"nummer": nummer, "von": von, "titel": stufe["titel"]}
@@ -1842,6 +1931,8 @@ class Lauf:
                             break
                         except Grenzfall as fall:
                             eintrag.setdefault("grenzfaelle", []).append({"art": fall.art, "technik": fall.technik[:240]})
+                            if fall.art == "budget":
+                                raise
                             if anlauf == 2:
                                 raise
                             grund = ("ließ sich nicht vollständig einarbeiten" if fall.art == "konflikt"
@@ -1862,7 +1953,7 @@ class Lauf:
                 finally:
                     self.baseline = baseline_vorher
                     eintrag["usage"] = self.usage_seit(vorher, beginn)
-                blockierend = [b for b in bericht.befunde if b.art in {"fehler", "abnahme"}]
+                blockierend = [b for b in bericht.befunde if b.art in {"fehler", *AKZEPTANZ}]
                 # Scheitert ein Schritt nur an Geschmacksfragen („zeigt sich im neuen Design“),
                 # die keine Messregel hat und nur das Modell nach Augenmaß beurteilt, blockiert
                 # er nicht (30.09.2026: Schritt 1 „Neues Design“ riss den ganzen Lauf ab, obwohl
@@ -1874,8 +1965,8 @@ class Lauf:
                     await self.melde("hinweis", text=(f"Schritt {nummer} („{stufe['titel']}“): Die Gestaltung lässt sich "
                                                       "nicht messen und wurde nicht eindeutig bestätigt. JOSHI macht "
                                                       "trotzdem weiter — sieh sie dir am Ende selbst an."))
-                    bericht.befunde = [b for b in bericht.befunde if b.art != "abnahme"]
-                    blockierend = []
+                    # Weiterarbeiten ist erlaubt, aber ein unbewiesener Schritt
+                    # erhält unten einen offenen Checkpoint statt eines grünen Hakens.
                 if blockierend or not self.vollstaendig:
                     grund = (blockierend[0].text if blockierend else "Die Datei blieb unvollständig.")[:300]
                     await self.technik(f"Schritt {nummer} offen: {bericht.reparaturtext()[:600]}")
@@ -2005,6 +2096,25 @@ class Lauf:
             self.pruefe_abbruch()
             bericht.aktionen, bericht.szenarien = await pruefer.szenarien_ausfuehren(
                 html, assets=assets, zustand=zustand, aktionen=proben, szenarien=szenarien)
+            # Erst das Prüfwerkzeug reparieren, wenn ein Ziel gar nicht existiert.
+            # Ein fehlerhafter Test darf keine Neuschreibung der Anwendung auslösen.
+            defekte = [s for s in bericht.szenarien if s.get("ergebnis") == "nicht_beweisbar"
+                       and "nicht gefunden" in str(s.get("grund"))]
+            if defekte:
+                ids = {s.get("kriterium") for s in defekte}
+                for kennung in ids:
+                    self.szenarien.pop(str(kennung), None)
+                await self.technik("Prüf-Worker: fehlendes Szenarioziel; einmalige Korrektur vor einer Code-Reparatur")
+                korrektur = await self.gemessen(abnahme.szenarien_erzeugen(
+                    self.zugang, self.modell, kriterien=[k for k in ablauf if k["id"] in ids],
+                    gliederung={**bericht.gliederung, "prueffehler": "; ".join(str(s.get("grund")) for s in defekte)},
+                    verbrauch=self.verbrauch))
+                if korrektur:
+                    _, korrigiert = await pruefer.szenarien_ausfuehren(
+                        html, assets=assets, zustand=zustand, szenarien=korrektur)
+                    ersetzt = {s.get("kriterium") for s in korrigiert}
+                    bericht.szenarien = [s for s in bericht.szenarien if s.get("kriterium") not in ersetzt] + korrigiert
+                    self.szenarien.update({s["kriterium"]: s for s in korrektur})
             for probe in bericht.aktionen:
                 await self.technik(f"Aktionsprobe {probe.get('aktion')} „{probe.get('knopf')}“: {probe.get('ergebnis')}"
                                    f" {', '.join(probe.get('belege') or [])} {probe.get('grund', '')}".strip())
@@ -2018,6 +2128,8 @@ class Lauf:
         beweise = abnahme.beweise_sammeln(bericht.gliederung, bericht.interaktion, self.baseline, bericht.exporte,
                                           aktionen=bericht.aktionen, szenarien=bericht.szenarien,
                                           mobil=bericht.mobil)
+        if self.inhaltsbasis:
+            beweise.setdefault("vorher", {})["leseinhalt"] = self.inhaltsbasis
         if not abnahme.beweisbar(beweise):
             self.datenabgleich(html, bericht)
             return
@@ -2050,6 +2162,7 @@ class Lauf:
         # beste geprüfte Fassung, und jede Reparatur setzt auf ihr auf.
         bester: tuple[tuple[int, int, int], str, bool, pruefer.Pruefbericht] | None = None
         vorige_signatur: Any = None
+        review_hinweis = ""
         while True:
             await self.phase("verbinden", "aktiv", "Laufzeit, Speicher und Bilder werden eingebunden …")
             html, hinweise = self.verbinden(html, assets)
@@ -2081,6 +2194,26 @@ class Lauf:
             _, html, vollstaendig, bericht = bester
             self.vollstaendig = vollstaendig
             bedarf = bericht.reparaturbedarf()
+            if (bedarf and versuch < max_reparaturen and not self.review_verwendet
+                    and (stillstand or any(b.art == "fehler" for b in bedarf))):
+                self.review_verwendet = True
+                try:
+                    self.builder_budget_pruefen()
+                    projekt = projektdateien.zerlegen(html)
+                    reihe = agenten.KontextWorker.ordnen(
+                        projekt.alle(), projektdateien.rangfolge(projekt, bericht.reparaturtext()))
+                    auswahl = projektdateien.auswahl_begrenzen(projekt, reihe, 17000, max_dateien=4)
+                    quelle = '\n'.join(f'Datei {n}:\n{projekt.alle()[n]}' for n in auswahl)
+                    if quelle:
+                        await self.technik("Review-Agent prüft konkrete Fehlerursache vor dem nächsten Builder-Aufruf")
+                        review_hinweis = await self.gemessen(agenten.RepairReviewAgent.pruefen(
+                            self.zugang, self.modell, auftrag=wunsch or self.wunsch or self.eingabe.text,
+                            quelle=quelle, fehler=bericht.reparaturtext(), verbrauch=self.verbrauch))
+                        if review_hinweis:
+                            stillstand = False
+                            await self.technik("Review-Agent: codegebundener Reparaturhinweis; Browserprüfung bleibt verbindlich")
+                except Exception:  # Review ist optional; Abbruch (CancelledError) bleibt wirksam.
+                    await self.technik("Review-Agent ohne Ergebnis; vorhandene Befunde bleiben maßgeblich")
             if stillstand and bedarf:
                 await self.technik(f"{vorsilbe}Reparatur {versuch} ohne messbare Wirkung — dieselben Befunde wie davor. "
                                    "JOSHI hört hier auf, statt weiter zu raten.")
@@ -2113,7 +2246,10 @@ class Lauf:
                 self.wunsch or self.eingabe.text if self.art == "aendern" else self.produkt.get("auftrag", ""))
 
             def nachrichten_fuer(ganz: bool, basis: str = html) -> list[dict[str, Any]]:
-                return prompts.reparieren_nachrichten(basis, bericht.reparaturtext(),
+                auftrag = workers.reparaturauftrag(bericht.abnahme, vertrag)
+                if review_hinweis:
+                    auftrag += '\n\nUnabhängiger Review-Hinweis (noch technisch zu prüfen):\n' + review_hinweis
+                return prompts.reparieren_nachrichten(basis, bericht.reparaturtext() + "\n\n" + auftrag,
                                                       auftrag=ziel, vollstaendig=ganz)
 
             try:
@@ -2198,6 +2334,10 @@ class Lauf:
             "befoerdert": befoerdert,
             "signale": [s.als_dict() for s in self.signale][:10],
             "routing": self.komplex,
+            "builder_budget": {"aufrufe": self.builder_aufrufe, "sekunden": round(self.builder_sekunden, 1),
+                               "max_aufrufe": self.grenzen.auftrag_generierungen,
+                               "max_sekunden": self.grenzen.auftrag_modellsekunden,
+                               "max_ausgabetokens": self.grenzen.auftrag_ausgabetokens},
             "tokens": {k: v for k, v in self.tokenwerte().items()
                        if k in {"tokens_actual", "output_tokens_actual", "input_tokens_actual", "eingabetokens",
                                 "output_tokens_estimated", "output_tokens_incomplete", "abgebrochen_geschaetzt",

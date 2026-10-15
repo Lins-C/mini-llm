@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.joshi.html_werk import Befund, json_aus_antwort
+from app.joshi import workers
 
 NACHWEISE = ("inhalt", "bedienung", "gestaltung", "ablauf", "nicht_pruefbar")
 AKTIONEN = ("speichern", "laden", "neu", "rueckgaengig", "wiederholen", "export", "filter", "umschalten",
@@ -587,6 +588,10 @@ def beweise_sammeln(gliederung: dict[str, Any], interaktion: dict[str, Any],
                                                        "leereFlaechen", "knoepfe", "felder")}
     if gliederung.get("gestaltung"):
         beweise["gestaltung"] = gliederung["gestaltung"]
+    if gliederung.get("leseinhalt"):
+        beweise["leseinhalt"] = gliederung["leseinhalt"]
+    if (interaktion.get("leseinhalt") or {}).get("woerter", 0) > (beweise.get("leseinhalt") or {}).get("woerter", 0):
+        beweise["leseinhalt"] = interaktion["leseinhalt"]
     beweise["reaktion"] = {"eingabe": bool(interaktion.get("reaktionEingabe")),
                            "gefuellt": int(interaktion.get("gefuellt") or 0)}
     if gliederung.get("stil"):
@@ -596,6 +601,7 @@ def beweise_sammeln(gliederung: dict[str, Any], interaktion: dict[str, Any],
     if baseline:
         beweise["vorher"] = {"felder": len(baseline.get("felder") or []),
                              "knoepfe": len(baseline.get("knoepfe") or []),
+                             "leseinhalt": baseline.get("leseinhalt") or {},
                              "ueberschriften": (baseline.get("ueberschriften") or [])[:8]}
     return beweise
 
@@ -1126,7 +1132,15 @@ def deterministisch_pruefen(vertrag: dict[str, Any], beweise: dict[str, Any]) ->
         nachweis = kriterium.get("nachweis", "inhalt")
         stichworte = kriterium.get("stichworte") or []
         beleg = ""
-        if nachweis == "nicht_pruefbar":
+        inhalt = (workers.inhaltspruefung(kriterium, beweise) or workers.layoutpruefung(kriterium, beweise)
+                  or workers.knopfpruefung(kriterium, beweise))
+        if inhalt is not None:
+            urteil, begruendung, beleg = inhalt
+        elif not workers.szenario_pruefen({}, kriterium, {}):
+            urteil, begruendung = "unbeweisbar", (
+                "Lese- und Aktionszeit benötigt einen vollständigen Ablauf und ein gemessenes Zeitmodell; "
+                "ein angezeigter Countdown oder ein schneller Probeklick beweist die Gesamtdauer nicht")
+        elif nachweis == "nicht_pruefbar":
             urteil, begruendung = "unbeweisbar", (
                 "Braucht eine zweite Sitzung oder eine echte Verbindung — die Prüfumgebung stellt nur eine "
                 "isolierte Seite ohne Netz bereit")
@@ -1140,7 +1154,7 @@ def deterministisch_pruefen(vertrag: dict[str, Any], beweise: dict[str, Any]) ->
             elif szenario and szenario.get("ergebnis") == "gescheitert":
                 urteil, begruendung = "fehlt", f"Szenario gescheitert: {szenario.get('grund', '')}"
             elif szenario and szenario.get("ergebnis") == "nicht_beweisbar":
-                urteil, begruendung = "unklar", f"Szenario nicht ausführbar: {szenario.get('grund', '')}"
+                urteil, begruendung = "unbeweisbar", f"Prüfszenario nicht ausführbar: {szenario.get('grund', '')}"
             else:
                 urteil, begruendung = "unklar", "Kein Szenario gelaufen"
         elif nachweis == "bedienung":
@@ -1244,7 +1258,7 @@ async def pruefen(zugang: Any, modell: str, vertrag: dict[str, Any], beweise: di
     # Beleg. Ein Modell darf ein fehlendes oder nicht ausführbares Szenario
     # nicht nachträglich mit einem allgemeinen Klickbeleg für erfüllt erklären.
     ablaufpflicht = {k["id"] for roh in vertrag.get("kriterien") or []
-                    if braucht_ablaufszenario(k := _kriterium(roh))}
+                    if (k := _kriterium(roh)).get("nachweis") == "ablauf" or braucht_ablaufszenario(k)}
     offen = [e for e in ergebnisse if e.urteil == "unklar" and e.id not in ablaufpflicht]
     if not offen:
         return bericht
@@ -1291,10 +1305,10 @@ async def pruefen(zugang: Any, modell: str, vertrag: dict[str, Any], beweise: di
 
 
 # ----------------------------------------------------------------- Szenarien
-SZENARIO_SCHRITTE = ("eingeben", "klicken", "taste", "warten", "messen", "neu_laden",
+SZENARIO_SCHRITTE = ("eingeben", "klicken", "klicken_in", "taste", "warten", "messen", "merken", "neu_laden",
                      "zweite_sitzung", "offline", "online")
 SZENARIO_PRUEFUNGEN = ("text_enthaelt", "text_fehlt", "wert_ist", "wert_enthaelt", "speicher_enthaelt",
-                       "keine_fehler", "sichtbar", "unsichtbar", "dauer_hoechstens")
+                       "keine_fehler", "sichtbar", "unsichtbar", "dauer_hoechstens", "text_geaendert")
 
 SZENARIO_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -1332,9 +1346,11 @@ Antworte nur mit JSON: szenarien — höchstens ein Szenario je Kriterium, jewei
 Schritte (art):
 - eingeben: ziel = id oder Beschriftung eines Feldes, wert = Eingabe (Formeln wie "=A1+1" als Text)
 - klicken: ziel = Beschriftung oder id eines Knopfs
+- klicken_in: ziel = stabile ID eines Behälters mit zufälligen Auswahlknöpfen; klickt dessen ersten sichtbaren Knopf
 - taste: ziel = Feld, wert = Taste ("Enter", "Tab", "Escape")
 - warten: ms (höchstens 2000)
 - messen: startet die Zeitmessung
+- merken: ziel = stabile ID eines Textbereichs; merkt dessen aktuellen Text
 - neu_laden: lädt die Seite neu, gespeicherte Daten bleiben erhalten
 - zweite_sitzung, offline, online: nur wenn das Kriterium es wirklich verlangt
 Prüfungen (art):
@@ -1344,8 +1360,9 @@ Prüfungen (art):
 - keine_fehler: keine Skriptfehler seit Beginn
 - sichtbar / unsichtbar: ziel = Beschriftung oder id
 - dauer_hoechstens: ms seit "messen"
+- text_geaendert: ziel = dieselbe ID wie bei merken; prüft, dass nach einer Aktion ein anderer, nicht leerer Text erscheint
 
-Verwende nur Ziele, die in der Messung vorkommen. Jedes Szenario endet mit mindestens einer Prüfung. Zahlen so erwarten, wie die Anwendung sie anzeigt.
+Verwende nur Ziele, die in der Messung vorkommen. Bevorzuge stabile IDs aus pruefziele. Zufällige Geschichtentitel, Personennamen und Kapiteltexte sind keine stabilen Ziele. Bei dynamischem Inhalt: merken → konkrete Aktion → text_geaendert am betroffenen Textbereich statt einen früheren Titel zu erwarten. Jedes Szenario endet mit mindestens einer Prüfung. Zahlen so erwarten, wie die Anwendung sie anzeigt.
 Zufällige Inhalte (neue Mission bei jedem Start, zufällige Rätsel, Würfel, Codes): Erwarte keine konkreten Lösungen, Codes oder Texte, die du nicht in der Messung siehst — rate nie Spielzüge. Gibt es einen Knopf für einen automatischen Durchlauf, Selbsttest oder eine Demo, klicke ihn und prüfe dessen Ergebnistext (z. B. „erfolgreich“).
 Aktuelles Datum oder Uhrzeit: Erwarte sie nicht auf die Minute genau.
 Bei einem Wunsch "Namen eintragen und speichern; erscheint danach" prüfe die ganze Folge: ein eindeutiger Testname fehlt zunächst, wird in das passende Feld eingegeben, der passende Knopf geklickt, der Testname erscheint, nach neu_laden erscheint er erneut. Ein anderer Speichern- oder Exportknopf genügt nicht."""
@@ -1409,6 +1426,12 @@ def szenarien_normalisieren(roh: Any, kriterien_ids: list[str], grenze: int = 4,
         schritte = schritte[:25]
         if not any(s["art"] in SZENARIO_PRUEFUNGEN for s in schritte):
             continue
+        if any(s["art"] == "text_geaendert" and (
+                not s.get("ziel") or not any(v["art"] == "merken" and v.get("ziel") == s["ziel"]
+                                            for v in schritte[:i])
+                or not any(v["art"] in {"klicken", "klicken_in", "eingeben", "taste"} for v in schritte[:i]))
+               for i, s in enumerate(schritte)):
+            continue
         if kriterium in (mehrschritt_ids or set()) and not _mehrschrittfolge(schritte):
             continue
         gesehen.add(kriterium)
@@ -1466,6 +1489,7 @@ def _eingabe_szenario(kriterium: dict[str, Any], gliederung: dict[str, Any]) -> 
 async def szenarien_erzeugen(zugang: Any, modell: str, *, kriterien: list[dict[str, Any]],
                              gliederung: dict[str, Any], verbrauch: dict[str, int]) -> list[dict[str, Any]]:
     """Ein kompakter Modellaufruf: Szenarien aus Kriterien und gemessener Oberfläche."""
+    kriterien = [k for k in kriterien if workers.szenario_pruefen({}, k, gliederung)]
     if not kriterien:
         return []
     automatisch = [s for k in kriterien if braucht_ablaufszenario(k)
@@ -1477,6 +1501,8 @@ async def szenarien_erzeugen(zugang: Any, modell: str, *, kriterien: list[dict[s
         "felder": [{k: f.get(k) for k in ("id", "label", "typ")} for f in (gliederung.get("felder") or [])[:40]],
         "knoepfe": (gliederung.get("knoepfe") or [])[:40],
         "ueberschriften": (gliederung.get("ueberschriften") or [])[:12],
+        "pruefziele": (gliederung.get("pruefziele") or [])[:40],
+        "voriger_prueffehler": str(gliederung.get("prueffehler") or "")[:1000],
         "text": re.sub(r"\n{2,}", "\n", str(gliederung.get("markdown") or ""))[:1500],
     }
     nachrichten = [
@@ -1494,7 +1520,9 @@ async def szenarien_erzeugen(zugang: Any, modell: str, *, kriterien: list[dict[s
     erzeugt = szenarien_normalisieren(
         roh, [k["id"] for k in offen], grenze=4 - len(automatisch),
         mehrschritt_ids={k["id"] for k in offen if braucht_ablaufszenario(k)})
-    return [*automatisch, *erzeugt]
+    kriterien_map = {k["id"]: k for k in kriterien}
+    return [s for s in [*automatisch, *erzeugt]
+            if workers.szenario_pruefen(s, kriterien_map[s["kriterium"]], gliederung)]
 
 
 def benoetigte_proben(vertrag: dict[str, Any]) -> list[str]:

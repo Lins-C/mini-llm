@@ -391,7 +391,7 @@ class PipelineTests(SpeicherTestfall):
         speicher.version_anlegen(erst["id"], gross, "Erstfassung", pruefung={"ok": True})
         speicher.produkt_aendern(self.user, erst["id"], version=1, status="ready")
         produkt = speicher.produkt(self.user, erst["id"])
-        zugang = GespielterZugang([], fenster=8192)
+        zugang = GespielterZugang([], fenster=2048)
         _, _, ereignisse = self.lauf("aendern", zugang, pipeline.Eingabe(text="x"), [bericht()], produkt)
         fehler = [e for e in ereignisse if e["type"] in {"fehler", "fertig"}][-1]["text"]
         self.assertIn("Kontextfenster", fehler)

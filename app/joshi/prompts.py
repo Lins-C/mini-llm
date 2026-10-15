@@ -93,6 +93,11 @@ Für alles, was du neu schreibst, gelten diese Regeln:
 PROJEKTDATEIEN_SYSTEM = """Du bist JOSHI und änderst eine bestehende HTML-Anwendung, die intern in Dateien aufgeteilt ist.
 JOSHI setzt deine Antwort anschließend wieder zu genau einer HTML-Datei zusammen, lädt sie in einem Browser und prüft sie technisch. Du entscheidest nicht selbst, ob sie funktioniert.
 
+Wenn für die konkrete Änderung eine bestehende Datei aus der Übersicht fehlt, rate ihren Inhalt nicht.
+Du darfst EINMAL bis zu drei bekannte Dateien anfordern. Antworte dann ausschließlich mit Zeilen wie:
+=== LESEN: js/bekannte-datei.js ===
+JOSHI gibt dir diese Dateien, danach lieferst du die gezielte Änderung. Kein Zugriff auf andere Dateien.
+
 Antworte ausschließlich in Dateiabschnitten mit diesem Format:
 === ÄNDERN: pfad/der/datei.js ===
 <<<<<<< SUCHEN

@@ -6,6 +6,19 @@
 // Prüfung und die Chat-Übergabe, dazu der sichtbare Inhalt als Markdown für
 // den Word-Export. Läuft als Funktionsrumpf (callAsyncJavaScript).
 const J = window.__joshi || { fehler: [], dialoge: [] };
+// Offscreen-WebKit kann Einblendungen auf dem ersten transparenten Frame
+// halten. Endliche kurze CSS-Animationen bis zum echten Endzustand ausführen;
+// endlose Spiel-/Canvas-Schleifen bleiben unangetastet.
+const einblendungenBeenden = () => {
+  if (typeof document.getAnimations !== "function") return;
+  for (const animation of document.getAnimations()) {
+    const timing = animation.effect && animation.effect.getComputedTiming();
+    if (timing && Number.isFinite(timing.endTime) && timing.endTime <= 3000) {
+      try { animation.finish(); } catch (e) { /* nicht beendbare Animation */ }
+    }
+  }
+};
+einblendungenBeenden();
 const sichtbar = (el) => {
   if (!el || !el.getBoundingClientRect) return false;
   const r = el.getBoundingClientRect();
@@ -45,6 +58,28 @@ const knoepfe = [...document.querySelectorAll("button,input[type=button],input[t
   .filter(Boolean);
 const ueberschriften = [...document.querySelectorAll("h1,h2,h3")].filter(sichtbar).slice(0, 30).map((h) => kurz(h.innerText, 100));
 const text = document.body ? document.body.innerText : "";
+// Lesetext separat von Navigation und Status zählen. Nur sichtbare Absätze;
+// der größte zusammenhängende Lesebereich zählt, keine Doppelzählung der Eltern.
+const messeLesetext = () => {
+  einblendungenBeenden();
+  const gruppen = [...document.querySelectorAll("article, [id*='story' i], [id*='geschichte' i], [class*='story' i], [class*='geschichte' i]")]
+    .filter(sichtbar);
+  let bester = null;
+  for (const el of gruppen) {
+    let ps = [...el.querySelectorAll("p")].filter(sichtbar)
+      .map(p => String(p.innerText || "").trim()).filter(t => t.length >= 40);
+    if (!ps.length) ps = String(el.innerText || "").split(/\n+/).map(t => t.trim()).filter(t => t.length >= 40);
+    const woerter = ps.join(" ").split(/\s+/).filter(Boolean).length;
+    if (ps.length && (!bester || woerter > bester.woerter)) {
+      const r = el.getBoundingClientRect();
+      bester = { woerter, absaetze: ps.length, breite: Math.round(r.width / innerWidth * 100),
+        element: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") };
+    }
+  }
+  return bester;
+};
+J.messeLesetext = messeLesetext;
+const leseinhalt = messeLesetext();
 
 // Sichtbarkeitsmaße gegen die weiße Seite: Wie viel zeigt die Anwendung
 // wirklich? Eine Seite, die lädt, kann trotzdem leer sein.
@@ -136,7 +171,12 @@ const gestaltung = (() => {
       vollbild = { breite: Math.round(b), hoehe: Math.round(h), element: el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") };
     }
   }
-  return { farben, glas, transparent, schatten, vollbild };
+  const bedienelemente = [...document.querySelectorAll("button,[role=button]")].filter(sichtbar).slice(0, 60).map(el => {
+    const s = getComputedStyle(el);
+    return { name: knopfname(el), verlauf: s.backgroundImage !== "none", schatten: s.boxShadow !== "none",
+      kinder: el.children.length };
+  });
+  return { farben, glas, transparent, schatten, vollbild, bedienelemente };
 })();
 
 // Aufbau: Wie viele Spalten bilden die wiederholten Karten, wie breit sind sie
@@ -238,6 +278,10 @@ return JSON.stringify({
   titel: kurz(document.title, 120),
   h1: kurz(document.querySelector("h1")?.innerText || "", 120),
   ueberschriften, felder, knoepfe,
+  pruefziele: [...document.querySelectorAll("[id]")]
+    .filter(el => !["SCRIPT", "STYLE"].includes(el.tagName)).slice(0, 60)
+    .map(el => ({ id: el.id, tag: el.tagName.toLowerCase(), sichtbar: sichtbar(el),
+      name: kurz(el.getAttribute("aria-label") || (sichtbar(el) ? el.innerText : ""), 60) })),
   anzahl: {
     tabellen: document.querySelectorAll("table").length,
     diagramme: document.querySelectorAll("canvas").length + [...document.querySelectorAll("svg")].filter((s) => s.getBoundingClientRect().width > 80).length,
@@ -245,6 +289,7 @@ return JSON.stringify({
     elemente: document.querySelectorAll("body *").length,
   },
   textLaenge: text.trim().length,
+  leseinhalt,
   sichtbar: {
     elemente: alleSichtbaren.length,
     interaktiv: alleSichtbaren.filter((el) => ["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(el.tagName)

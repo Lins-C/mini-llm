@@ -695,12 +695,14 @@ def stufenplan_normalisieren(roh: Any, vertrag: dict[str, Any], max_stufen: int 
         titel = str(eintrag.get("titel") or "").strip()[:60]
         auftrag = str(eintrag.get("auftrag") or "").strip()[:1200]
         ids = [i for i in (eintrag.get("kriterien") or []) if isinstance(i, str) and i in bekannt]
-        if not auftrag:
+        # Modellpläne können erledigte/erfundene IDs enthalten. Solche Schritte
+        # haben keinen Auftrag aus dem offenen Vertrag und dürfen nicht laufen.
+        if not auftrag or not ids:
             continue
         stufen.append({"titel": titel or f"Schritt {len(stufen) + 1}", "auftrag": auftrag,
                        "kriterien": list(dict.fromkeys(ids))})
     stufen = stufen[:max_stufen]
-    if len(stufen) < 2:
+    if not stufen:
         return stufenplan_ohne_modell(vertrag, max_stufen)
     verteilt = {i for s in stufen for i in s["kriterien"]}
     fehlend = [i for i in bekannt if i not in verteilt]

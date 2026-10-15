@@ -474,6 +474,7 @@ const NICHT_NACHSTELLBAR = {
 async function szenario(schritte) {
   let messbeginn = performance.now();
   const messwerte = {};
+  const gemerkt = new Map();
   for (let i = 0; i < schritte.length; i++) {
     const s = schritte[i] || {};
     const nummer = `Schritt ${i + 1} (${s.art})`;
@@ -486,6 +487,11 @@ async function szenario(schritte) {
       const el = finde(s.ziel, "knopf");
       if (!el) return { ergebnis: "nicht_beweisbar", grund: `${nummer}: Knopf „${s.ziel}“ nicht gefunden`, messwerte };
       el.click(); await warte(120);
+    } else if (s.art === "klicken_in") {
+      const region = document.getElementById(String(s.ziel || ""));
+      const el = region && [...region.querySelectorAll(KNOEPFE)].find(e => sichtbar(e) && !e.disabled);
+      if (!el) return { ergebnis: "nicht_beweisbar", grund: `${nummer}: kein Auswahlknopf im Ziel gefunden`, messwerte };
+      el.click(); await warte(120);
     } else if (s.art === "taste") {
       const el = s.ziel ? finde(s.ziel, "feld") : document.activeElement;
       if (!el) return { ergebnis: "nicht_beweisbar", grund: `${nummer}: Ziel „${s.ziel}“ nicht gefunden`, messwerte };
@@ -495,6 +501,10 @@ async function szenario(schritte) {
       await warte(Math.min(2000, Number(s.ms) || 100));
     } else if (s.art === "messen") {
       messbeginn = performance.now();
+    } else if (s.art === "merken") {
+      const el = document.getElementById(String(s.ziel || ""));
+      if (!el || !sichtbar(el)) return { ergebnis: "nicht_beweisbar", grund: `${nummer}: stabile Ziel-ID nicht sichtbar`, messwerte };
+      gemerkt.set(String(s.ziel), String(el.innerText || "").trim());
     } else if (s.art === "neu_laden") {
       return { ergebnis: "nicht_beweisbar", grund: "Neuladen wird vom Prüfer zwischen zwei Phasen erledigt", messwerte };
     } else {
@@ -517,6 +527,17 @@ async function szenario(schritte) {
       else if (s.art === "wert_ist") { ok = norm(quelle) === erwartet; gefunden = kurz(quelle, 80); }
       else if (s.art === "wert_enthaelt") { ok = norm(quelle).includes(erwartet); gefunden = kurz(quelle, 80); }
       else if (s.art === "speicher_enthaelt") { ok = norm(speicher()).includes(erwartet); gefunden = kurz(speicher(), 160); }
+      else if (s.art === "text_geaendert") {
+        const ziel = String(s.ziel || "");
+        const region = document.getElementById(ziel);
+        if (!gemerkt.has(ziel) || !region || !sichtbar(region)) {
+          return { ergebnis: "nicht_beweisbar", grund: `${nummer}: keine passende Vorhermessung`, messwerte };
+        }
+        const jetzt = String(region.innerText || "").trim();
+        ok = !!jetzt && jetzt !== gemerkt.get(ziel);
+        gefunden = ok ? "Textbereich verändert" : "Textbereich unverändert";
+        messwerte[`text_geaendert_${ziel}`] = ok;
+      }
       else if (s.art === "keine_fehler") { const neu = (J.fehler || []).slice(fehlerStart); ok = !neu.length; gefunden = neu.map((f) => f.text).join("; ").slice(0, 160); }
       else if (s.art === "sichtbar") {
         const exakt = findeExakt(s.ziel);

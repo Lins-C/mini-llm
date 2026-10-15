@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.joshi import renderer
+from app.joshi import renderer, agenten
 from app.joshi.html_werk import Befund, code_ausschnitt, laufzeit_dokument, originalzeile, statische_befunde
 
 
@@ -377,6 +377,9 @@ async def pruefen(
                                  "Kein schließendes </html>; die Ausgabe des Modells wurde abgeschnitten."))
     if not dokument.strip():
         return Pruefbericht(befunde, browser=False, dauer=time.monotonic() - beginn)
+    syntax = await agenten.SyntaxWorker.pruefen(dokument)
+    if syntax:
+        return Pruefbericht([*befunde, *syntax], browser=False, dauer=time.monotonic() - beginn)
     laufzeit = laufzeit_dokument(dokument, modus="pruefung", zustand=zustand, assets=assets)
     try:
         messung, handy = await asyncio.gather(

@@ -230,6 +230,7 @@ kaputtPruefen("nach dem Ausfüllen");
 let reaktionKlick = false;
 let letzte = signatur();
 const klicks = [];
+let leseinhalt = typeof J.messeLesetext === "function" ? J.messeLesetext() : null;
 // Größte Spiel-/Zeichenfläche — auch nach Klicks gemessen: Ein Spiel zeigt seine
 // Fläche oft erst nach „Start“ (08.10.2026, Kolibri Jump: beim Laden lag das
 // Startmenü obenauf, die Abnahme sah keinen Vollbild-Spielbereich).
@@ -368,6 +369,10 @@ for (let stelle = 0; stelle < reihenfolge.length && geklickt < 30; stelle++) {
   }
   if (jetzt !== letzte) reaktionKlick = true;
   try { vollbildNachKlick(name); } catch (e) { /* Messung ist Beiwerk */ }
+  if (typeof J.messeLesetext === "function") {
+    const lesen = J.messeLesetext();
+    if (lesen && (!leseinhalt || lesen.woerter > leseinhalt.woerter)) leseinhalt = { ...lesen, nach: name };
+  }
   letzte = signatur();
   if (!kaputt.length) kaputtPruefen(`nach Klick auf „${beschriftung(knopf)}“`);
   if (folgeMasken < 6) {
@@ -407,6 +412,7 @@ return JSON.stringify({
     kaputteWerte: kaputt,
     klicks,
     vollbild,
+    leseinhalt,
   },
   fehler: (J.fehler || []),
   fehlerBeimLaden: fehlerVorher,

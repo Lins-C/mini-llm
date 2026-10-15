@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from app.joshi.html_werk import aenderungsbloecke, bloecke_einzeln
+from app.joshi.agenten import AntwortWorker
 
 # Ab dieser Größe arbeitet JOSHI im Projekt (dieselbe Schwelle, ab der eine
 # Datei nach einem Patchkonflikt nicht mehr neu geschrieben wird).
@@ -372,12 +373,17 @@ def rangfolge(projekt: Projekt, aufgabe: str) -> list[str]:
     return [name for _, _, name in sorted(wertung)]
 
 
-def auswahl_begrenzen(projekt: Projekt, gewuenscht: list[str], budget: int) -> list[str]:
+def auswahl_begrenzen(projekt: Projekt, gewuenscht: list[str], budget: int,
+                     max_dateien: int | None = None) -> list[str]:
     """Gewünschte Dateien in Reihenfolge, solange das Budget reicht; index.html ist Rückfall."""
     alle = projekt.alle()
     reihe = [n for n in dict.fromkeys([*gewuenscht, "index.html"]) if n in alle]
+    if max_dateien is not None and "index.html" in reihe:
+        reihe = ["index.html", *[n for n in reihe if n != "index.html"]]
     gewaehlt, summe = [], 0
     for name in reihe:
+        if max_dateien is not None and len(gewaehlt) >= max_dateien:
+            break
         if summe + len(alle[name]) <= budget:
             gewaehlt.append(name)
             summe += len(alle[name])
@@ -385,6 +391,17 @@ def auswahl_begrenzen(projekt: Projekt, gewuenscht: list[str], budget: int) -> l
 
 
 # ------------------------------------------------------------------ Antwort
+def leseanfrage(text: str, projekt: Projekt) -> list[str]:
+    """Ein begrenztes Lesewerkzeug ausschließlich für Dateien dieses Produkts."""
+    zeilen = [z.strip() for z in str(text or "").strip().splitlines() if z.strip()]
+    if not zeilen or not all(re.fullmatch(r"=== LESEN: [^\s]+ ===", z) for z in zeilen):
+        return []
+    namen = list(dict.fromkeys(z[len("=== LESEN: "):-len(" ===")] for z in zeilen))
+    if len(namen) > 3 or any(n not in projekt.alle() for n in namen):
+        raise ProjektFehler("Lesewerkzeug: nur höchstens drei bekannte Produktdateien erlaubt")
+    return namen
+
+
 _KOPF = re.compile(r"^[ \t]*={3,}[ \t]*(DATEI|ÄNDERN|AENDERN|ÄNDERUNG)[ \t]*:?[ \t]*(\S+?)[ \t]*={3,}[ \t]*$",
                    re.M | re.I)
 _ENDE = re.compile(r"^[ \t]*={3,}[ \t]*ENDE(?:[ \t]+DATEI)?[ \t]*={3,}[ \t]*$", re.M | re.I)
@@ -414,6 +431,8 @@ class Antwort:
 def abschnitte(text: str) -> list[tuple[str, str, str]]:
     """(Art, Pfad, Inhalt) je Dateiabschnitt der Antwort."""
     koepfe = list(_KOPF.finditer(text or ""))
+    if not koepfe:
+        return AntwortWorker.dateien(text)
     ergebnis = []
     for nummer, kopf in enumerate(koepfe):
         ende = koepfe[nummer + 1].start() if nummer + 1 < len(koepfe) else len(text)
