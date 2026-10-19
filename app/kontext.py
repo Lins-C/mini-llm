@@ -74,6 +74,10 @@ def lokales_kontextfenster() -> int:
 
 
 def kontext_tokens(modell: str) -> int:
+    if modell == "qwen3.8:27b-mlx-q3":
+        return min(4096, lokales_kontextfenster())
+    if modell == "ministral-3:8b-mlx":
+        return min(8192, lokales_kontextfenster())
     return CLOUD_KONTEXT if ist_cloud_modell(modell) else lokales_kontextfenster()
 
 
@@ -140,7 +144,7 @@ def kontext_optionen(modell: str) -> dict[str, int]:
     """
     if ist_cloud_modell(modell):
         return {}
-    return {"num_ctx": lokales_kontextfenster()}
+    return {"num_ctx": kontext_tokens(modell)}
 
 
 # --- Welcher Weg für welches Material --------------------------------------

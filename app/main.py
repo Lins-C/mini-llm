@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Annotated, Any, AsyncIterator
 
 import httpx
+from app.mlx_transport import optional_transport
 import psutil
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -70,7 +71,13 @@ from app.intelligence import (
     transcribe_youtube,
     web_search,
 )
-from app.exports import build_export, email_draft_plain_text, parse_email_draft
+from app.exports import (
+    build_export,
+    email_draft_plain_text,
+    invoice_email_subject,
+    invoice_email_text,
+    parse_email_draft,
+)
 from app.joshi import api as joshi_api
 from app.joshi import renderer as joshi_renderer
 from app.joshi import speicher as joshi_speicher
@@ -88,6 +95,13 @@ from app.kontext import (
     plane_material,
 )
 from app.verlauf import kuerzen, verlauf_auswaehlen, verlauf_budget, verlauf_kurzfassung
+from app.rechnung import (
+    INVOICE_SCHEMA,
+    invoice_plain_text,
+    invoice_system_prompt,
+    normalize_invoice_artifact,
+    vorige_rechnungsnummer,
+)
 from app.task_skills import (
     normalize_letter_artifact,
     parse_structured_content,
@@ -211,6 +225,7 @@ async def lifespan(app: FastAPI):
     joshi_speicher.nach_neustart_aufraeumen()
     psutil.cpu_percent(interval=None)
     app.state.http = httpx.AsyncClient(
+        transport=optional_transport(OLLAMA_URL),
         timeout=httpx.Timeout(connect=10, read=None, write=30, pool=10)
     )
     # Der WebKit-Renderer wird beim ersten Start übersetzt (rund 30 Sekunden),
@@ -512,6 +527,14 @@ class ProfileAddressPayload(BaseModel):
     country: str = Field(default="", max_length=100)
 
 
+class ProfileInvoicePayload(BaseModel):
+    tax_id: str = Field(default="", max_length=60)
+    vat_mode: str = Field(default="standard", pattern="^(standard|small)$")
+    iban: str = Field(default="", max_length=60)
+    bic: str = Field(default="", max_length=20)
+    bank: str = Field(default="", max_length=120)
+
+
 class ProfilePayload(BaseModel):
     name: str = Field(default="", max_length=120)
     birth_date: str = Field(default="", max_length=20)
@@ -525,6 +548,7 @@ class ProfilePayload(BaseModel):
     pets: str = Field(default="", max_length=4000)
     important_details: str = Field(default="", max_length=6000)
     global_persona: str = Field(default="", max_length=6000)
+    invoice: ProfileInvoicePayload = Field(default_factory=ProfileInvoicePayload)
 
 
 class AttemptLimiter:
@@ -1930,6 +1954,10 @@ def normalized_profile_payload(payload: ProfilePayload) -> dict[str, Any]:
         key: str(value or "").strip()
         for key, value in result["address"].items()
     }
+    result["invoice"] = {
+        key: str(value or "").strip()
+        for key, value in result["invoice"].items()
+    }
     return result
 
 
@@ -2952,6 +2980,16 @@ async def export_answer(request: Request, payload: ExportPayload) -> Response:
 @app.post("/api/email-draft")
 async def email_draft(request: Request, payload: ExportPayload) -> dict[str, str]:
     user = require_user(request)
+    if isinstance(payload.artifact, dict) and payload.artifact.get("type") == "invoice":
+        # Die Rechnung als Mail: dieselben Zahlen wie im PDF, kein Umweg über den Text.
+        rechnung = normalize_invoice_artifact(payload.artifact)
+        return {
+            "to": "",
+            "subject": invoice_email_subject(rechnung),
+            "body": invoice_email_text(rechnung),
+            "sender_name": str(rechnung["sender"].get("name") or ""),
+            "sender_email": str(rechnung["sender"].get("email") or ""),
+        }
     sender_name = ""
     sender_email = ""
     if payload.profile_context_enabled:
@@ -3794,6 +3832,78 @@ async def chat(
                     stop_event=stop_event,
                 ):
                     yield zeile
+                yield event_line(
+                    "done",
+                    done_reason="stop",
+                    prompt_eval_count=usage["prompt_tokens"],
+                    eval_count=usage["completion_tokens"],
+                    llm_calls=usage["calls"],
+                    model=model,
+                )
+                return
+            if effective_task_skill == "invoice":
+                # Das Modell liefert die Angaben, Mini LLM rechnet: Netto,
+                # Umsatzsteuer und Summe entstehen nie im Modell.
+                yield event_line(
+                    "progress",
+                    message="Rechnung wird erstellt",
+                    current=1,
+                    total=2,
+                )
+                roh = await ollama_structured_complete(
+                    request.app.state.http,
+                    model,
+                    [{
+                        "role": "system",
+                        "content": invoice_system_prompt(current_date_label()),
+                    }, *messages],
+                    INVOICE_SCHEMA,
+                    temperature=0.0,
+                    usage=usage,
+                    optionen=kontext_optionen(model),
+                )
+                if stop_event.is_set():
+                    yield event_line("stopped")
+                    return
+                yield event_line(
+                    "progress",
+                    message="Summen, Umsatzsteuer und Pflichtangaben werden geprüft",
+                    current=2,
+                    total=2,
+                )
+                # Gegenprobe der Beträge gegen alles, was der Nutzer geliefert hat —
+                # bei „die Posten als Tabelle“ stehen sie im Verlauf.
+                quelle = "\n".join(
+                    str(eintrag.get("content") or "")
+                    for eintrag in messages
+                    if eintrag.get("role") in {"user", "assistant"}
+                )
+                rechnung = normalize_invoice_artifact(
+                    roh,
+                    profile,
+                    profile_context_enabled,
+                    current_date_label(),
+                    quelle,
+                    vorige_nummer=vorige_rechnungsnummer([
+                        str(eintrag.get("content") or "")
+                        for eintrag in messages
+                        if eintrag.get("role") == "assistant"
+                    ]),
+                )
+                if not rechnung["items"]:
+                    yield event_line(
+                        "error",
+                        message=(
+                            "Das Modell hat keine verwertbaren Rechnungspositionen geliefert. "
+                            "Bitte erneut versuchen oder ein anderes Modell wählen."
+                        ),
+                    )
+                    return
+                yield event_line(
+                    "artifact",
+                    artifact=rechnung,
+                    content=invoice_plain_text(rechnung),
+                )
                 yield event_line(
                     "done",
                     done_reason="stop",

@@ -41,6 +41,15 @@ from reportlab.platypus import (
 )
 
 from app.task_skills import normalize_letter_artifact
+from app.rechnung import (
+    euro,
+    invoice_address_lines,
+    invoice_bank_line,
+    invoice_totals_lines,
+    menge_text,
+    normalize_invoice_artifact,
+)
+from decimal import Decimal
 from app.presentation_export import build_pptx
 
 
@@ -1208,6 +1217,344 @@ def build_letter_eml(artifact: dict[str, Any]) -> bytes:
     return message.as_bytes()
 
 
+# --- Rechnung ---------------------------------------------------------------
+# Dieselbe Rechnung in vier Formaten. Summen kommen immer aus
+# normalize_invoice_artifact — kein Export rechnet selbst.
+
+def _rechnung_positionszeilen(rechnung: dict[str, Any]) -> list[list[str]]:
+    zeilen = []
+    for position in rechnung["items"]:
+        menge = f"{menge_text(Decimal(str(position['quantity'])))} {position['unit']}"
+        einzel = "inklusive" if position["included"] else euro(position["unit_price"])
+        gesamt = "inklusive" if position["included"] else euro(position["total"])
+        zeilen.append([str(position["pos"]), position["description"], menge, einzel, gesamt])
+    return zeilen
+
+
+def _rechnung_kopfdaten(rechnung: dict[str, Any]) -> list[tuple[str, str]]:
+    daten = [
+        ("Rechnungsnummer", rechnung["invoice_number"]),
+        ("Rechnungsdatum", rechnung["invoice_date"]),
+        ("Leistungsdatum", rechnung["service_date"]),
+    ]
+    if rechnung.get("customer_number"):
+        daten.append(("Kundennummer", rechnung["customer_number"]))
+    return daten
+
+
+def _rechnung_absender(rechnung: dict[str, Any]) -> list[str]:
+    zeilen = invoice_address_lines(rechnung["sender"], mit_kontakt=True)
+    if rechnung.get("tax_id"):
+        zeilen.append(f"Steuernr./USt-IdNr.: {rechnung['tax_id']}")
+    return zeilen
+
+
+def invoice_filename(rechnung: dict[str, Any]) -> str:
+    return safe_filename(f"Rechnung {rechnung['invoice_number']}")
+
+
+def build_invoice_pdf(artifact: dict[str, Any]) -> bytes:
+    rechnung = _pdf_safe_deep(normalize_invoice_artifact(artifact))
+    output = BytesIO()
+    document = SimpleDocTemplate(
+        output, pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title=safe_title(f"Rechnung {rechnung['invoice_number']}"),
+        author=str(rechnung["sender"].get("name") or ""),
+    )
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle(name="RechnungText", parent=styles["BodyText"], fontName="Helvetica",
+                          fontSize=10, leading=14, textColor=colors.HexColor("#202B35"), spaceAfter=8)
+    klein = ParagraphStyle(name="RechnungKlein", parent=body, fontSize=8.5, leading=11.5, spaceAfter=0)
+    klein_rechts = ParagraphStyle(name="RechnungKleinRechts", parent=klein, alignment=2)
+    label = ParagraphStyle(name="RechnungLabel", parent=klein, fontName="Helvetica-Bold", fontSize=7,
+                           leading=9, textColor=colors.HexColor(f"#{MUTED}"), spaceAfter=4)
+    label_rechts = ParagraphStyle(name="RechnungLabelRechts", parent=label, alignment=2)
+    titel = ParagraphStyle(name="RechnungTitel", parent=body, fontName="Helvetica-Bold", fontSize=20,
+                           leading=24, textColor=colors.HexColor(f"#{NAVY}"), spaceAfter=2)
+    zelle = ParagraphStyle(name="RechnungZelle", parent=body, fontSize=9.5, leading=12.5, spaceAfter=0)
+    zelle_rechts = ParagraphStyle(name="RechnungZelleRechts", parent=zelle, alignment=2)
+    kopf_zelle = ParagraphStyle(name="RechnungKopfZelle", parent=zelle, fontName="Helvetica-Bold",
+                                textColor=colors.white)
+    kopf_rechts = ParagraphStyle(name="RechnungKopfRechts", parent=kopf_zelle, alignment=2)
+
+    def zeilen_html(zeilen: list[str]) -> str:
+        return "<br/>".join(html.escape(zeile) for zeile in zeilen)
+
+    kopf = Table([[
+        [Paragraph("EMPFÄNGER", label),
+         Paragraph(zeilen_html(invoice_address_lines(rechnung["recipient"])), klein)],
+        [Paragraph("ABSENDER", label_rechts),
+         Paragraph(zeilen_html(_rechnung_absender(rechnung)), klein_rechts)],
+    ]], colWidths=[85 * mm, 85 * mm], hAlign="LEFT")
+    kopf.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        *[(eigenschaft, (0, 0), (-1, -1), 0) for eigenschaft in (
+            "LEFTPADDING", "RIGHTPADDING", "TOPPADDING", "BOTTOMPADDING")],
+    ]))
+    meta = Table(
+        [[Paragraph(html.escape(name), klein), Paragraph(html.escape(wert), klein_rechts)]
+         for name, wert in _rechnung_kopfdaten(rechnung)],
+        colWidths=[38 * mm, 52 * mm], hAlign="RIGHT",
+    )
+    meta.setStyle(TableStyle([
+        ("LINEBELOW", (0, 0), (-1, -2), 0.3, colors.HexColor("#D9DEE4")),
+        ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    positionen = [[
+        Paragraph("Pos.", kopf_zelle), Paragraph("Leistung", kopf_zelle), Paragraph("Menge", kopf_zelle),
+        Paragraph("Einzelpreis", kopf_rechts), Paragraph("Gesamt", kopf_rechts),
+    ]]
+    for nummer, beschreibung, menge, einzel, gesamt in _rechnung_positionszeilen(rechnung):
+        positionen.append([
+            Paragraph(nummer, zelle), Paragraph(html.escape(beschreibung), zelle),
+            Paragraph(html.escape(menge), zelle), Paragraph(einzel, zelle_rechts),
+            Paragraph(gesamt, zelle_rechts),
+        ])
+    tabelle = LongTable(positionen, colWidths=[12 * mm, 78 * mm, 24 * mm, 28 * mm, 28 * mm],
+                        repeatRows=1, hAlign="LEFT")
+    tabelle.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(f"#{NAVY}")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F7FB")]),
+        ("LINEBELOW", (0, -1), (-1, -1), 0.6, colors.HexColor(f"#{NAVY}")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]))
+    summen_daten = []
+    for bezeichnung, wert, betont in invoice_totals_lines(rechnung):
+        stil = ParagraphStyle(name=f"Summe{len(summen_daten)}", parent=zelle,
+                              fontName="Helvetica-Bold" if betont else "Helvetica")
+        stil_rechts = ParagraphStyle(name=f"SummeR{len(summen_daten)}", parent=stil, alignment=2)
+        summen_daten.append([Paragraph(html.escape(bezeichnung), stil), Paragraph(wert, stil_rechts)])
+    summen = Table(summen_daten, colWidths=[52 * mm, 28 * mm], hAlign="RIGHT")
+    betonte = [i for i, (_, _, b) in enumerate(invoice_totals_lines(rechnung)) if b]
+    summen.setStyle(TableStyle([
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        *[("LINEABOVE", (0, i), (-1, i), 0.8, colors.HexColor(f"#{NAVY}")) for i in betonte],
+    ]))
+
+    story: list[Any] = [kopf, Spacer(1, 12 * mm), Paragraph("Rechnung", titel)]
+    if rechnung["subject"] and rechnung["subject"].lower() != "rechnung":
+        story.append(Paragraph(html.escape(rechnung["subject"]), body))
+    story += [meta, Spacer(1, 8 * mm), Paragraph(html.escape(rechnung["salutation"]), body)]
+    if rechnung.get("intro"):
+        story.append(Paragraph(html.escape(rechnung["intro"]), body))
+    story += [Spacer(1, 2 * mm), tabelle, Spacer(1, 3 * mm), summen, Spacer(1, 7 * mm),
+              Paragraph(html.escape(rechnung["payment_terms"]), body)]
+    bank = invoice_bank_line(rechnung)
+    if bank:
+        story.append(Paragraph(html.escape(bank), body))
+    for notiz in rechnung.get("notes") or []:
+        story.append(Paragraph(html.escape(notiz), body))
+    story += [Spacer(1, 6 * mm), Paragraph(html.escape(rechnung["closing"]), body),
+              Spacer(1, 8 * mm), Paragraph(html.escape(rechnung.get("signature") or ""), body)]
+    document.build(story)
+    return output.getvalue()
+
+
+def build_invoice_docx(artifact: dict[str, Any]) -> bytes:
+    rechnung = normalize_invoice_artifact(artifact)
+    document = Document()
+    section = document.sections[0]
+    section.page_width, section.page_height = Cm(21), Cm(29.7)
+    section.top_margin = section.bottom_margin = Cm(1.8)
+    section.left_margin = section.right_margin = Cm(2.0)
+    normal = document.styles["Normal"]
+    normal.font.name = "Arial"
+    normal.font.size = Pt(10)
+    normal.font.color.rgb = RGBColor.from_string("202B35")
+    normal.paragraph_format.space_after = Pt(6)
+
+    kopf = document.add_table(rows=1, cols=2)
+    kopf.autofit = False
+    _remove_docx_table_borders(kopf)
+    for zelle, titel, zeilen, rechts in (
+        (kopf.rows[0].cells[0], "EMPFÄNGER", invoice_address_lines(rechnung["recipient"]), False),
+        (kopf.rows[0].cells[1], "ABSENDER", _rechnung_absender(rechnung), True),
+    ):
+        erster = zelle.paragraphs[0]
+        lauf = erster.add_run(titel)
+        lauf.bold = True
+        lauf.font.size = Pt(7)
+        lauf.font.color.rgb = RGBColor.from_string(MUTED)
+        if rechts:
+            erster.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        for zeile in zeilen:
+            absatz = zelle.add_paragraph(zeile)
+            absatz.paragraph_format.space_after = Pt(0)
+            if rechts:
+                absatz.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    ueberschrift = document.add_paragraph()
+    ueberschrift.paragraph_format.space_before = Pt(24)
+    lauf = ueberschrift.add_run("Rechnung")
+    lauf.bold = True
+    lauf.font.size = Pt(20)
+    lauf.font.color.rgb = RGBColor.from_string(NAVY)
+    if rechnung["subject"] and rechnung["subject"].lower() != "rechnung":
+        document.add_paragraph(rechnung["subject"])
+    meta = document.add_table(rows=0, cols=2)
+    for name, wert in _rechnung_kopfdaten(rechnung):
+        zeile = meta.add_row().cells
+        zeile[0].text = name
+        zeile[1].text = wert
+        zeile[1].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    document.add_paragraph()
+    document.add_paragraph(rechnung["salutation"])
+    if rechnung.get("intro"):
+        document.add_paragraph(rechnung["intro"])
+
+    tabelle = document.add_table(rows=1, cols=5)
+    tabelle.style = "Table Grid"
+    for zelle, text in zip(tabelle.rows[0].cells, ["Pos.", "Leistung", "Menge", "Einzelpreis", "Gesamt"]):
+        zelle.text = ""
+        lauf = zelle.paragraphs[0].add_run(text)
+        lauf.bold = True
+        _set_cell_shading(zelle, PALE_BLUE)
+    for werte in _rechnung_positionszeilen(rechnung):
+        zellen = tabelle.add_row().cells
+        for spalte, (zelle, text) in enumerate(zip(zellen, werte)):
+            zelle.text = text
+            if spalte >= 3:
+                zelle.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    for zeile in tabelle.rows:
+        for spalte, breite in enumerate((1.2, 8.0, 2.4, 2.7, 2.7)):
+            zeile.cells[spalte].width = Cm(breite)
+    for zelle in tabelle.rows[0].cells[3:]:
+        zelle.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    summen = document.add_table(rows=0, cols=2)
+    summen.alignment = WD_TABLE_ALIGNMENT.RIGHT
+    for bezeichnung, wert, betont in invoice_totals_lines(rechnung):
+        zellen = summen.add_row().cells
+        for zelle, text, rechts in ((zellen[0], bezeichnung, False), (zellen[1], wert, True)):
+            zelle.text = ""
+            lauf = zelle.paragraphs[0].add_run(text)
+            lauf.bold = betont
+            if rechts:
+                zelle.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    document.add_paragraph()
+    document.add_paragraph(rechnung["payment_terms"])
+    bank = invoice_bank_line(rechnung)
+    if bank:
+        document.add_paragraph(bank)
+    for notiz in rechnung.get("notes") or []:
+        document.add_paragraph(notiz)
+    gruss = document.add_paragraph(rechnung["closing"])
+    gruss.paragraph_format.space_before = Pt(12)
+    gruss.paragraph_format.space_after = Pt(22)
+    document.add_paragraph(rechnung.get("signature") or "")
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def build_invoice_xlsx(artifact: dict[str, Any]) -> bytes:
+    rechnung = normalize_invoice_artifact(artifact)
+    mappe = Workbook()
+    blatt = mappe.active
+    blatt.title = "Rechnung"
+    fett = Font(bold=True)
+    blatt["A1"] = "Rechnung"
+    blatt["A1"].font = Font(bold=True, size=16, color=NAVY)
+    zeile = 3
+    for name, wert in _rechnung_kopfdaten(rechnung):
+        blatt.cell(row=zeile, column=1, value=name).font = fett
+        blatt.cell(row=zeile, column=2, value=_safe_cell_value(wert))
+        zeile += 1
+    zeile += 1
+    blatt.cell(row=zeile, column=1, value="Empfänger").font = fett
+    blatt.cell(row=zeile, column=4, value="Absender").font = fett
+    for versatz, text in enumerate(invoice_address_lines(rechnung["recipient"]), 1):
+        blatt.cell(row=zeile + versatz, column=1, value=_safe_cell_value(text))
+    absender = _rechnung_absender(rechnung)
+    for versatz, text in enumerate(absender, 1):
+        blatt.cell(row=zeile + versatz, column=4, value=_safe_cell_value(text))
+    zeile += max(len(absender), len(invoice_address_lines(rechnung["recipient"]))) + 2
+    kopf = ["Pos.", "Leistung", "Menge", "Einheit", "Einzelpreis", "Gesamt"]
+    for spalte, text in enumerate(kopf, 1):
+        zelle = blatt.cell(row=zeile, column=spalte, value=text)
+        zelle.font = Font(bold=True, color="FFFFFF")
+        zelle.fill = PatternFill("solid", fgColor=NAVY)
+    format_euro = '#,##0.00 "€"'
+    for position in rechnung["items"]:
+        zeile += 1
+        blatt.cell(row=zeile, column=1, value=position["pos"])
+        blatt.cell(row=zeile, column=2, value=_safe_cell_value(position["description"]))
+        blatt.cell(row=zeile, column=3, value=position["quantity"])
+        blatt.cell(row=zeile, column=4, value=position["unit"])
+        if position["included"]:
+            blatt.cell(row=zeile, column=5, value="inklusive")
+            blatt.cell(row=zeile, column=6, value="inklusive")
+        else:
+            blatt.cell(row=zeile, column=5, value=position["unit_price"]).number_format = format_euro
+            blatt.cell(row=zeile, column=6, value=position["total"]).number_format = format_euro
+    zeile += 1
+    for bezeichnung, wert, betont in invoice_totals_lines(rechnung):
+        zeile += 1
+        betrag_wert = {"Nettobetrag": rechnung["net"]}.get(bezeichnung)
+        if betrag_wert is None:
+            betrag_wert = rechnung["gross"] if "Gesamt" in bezeichnung else rechnung["vat"]
+        blatt.cell(row=zeile, column=5, value=bezeichnung).font = Font(bold=betont)
+        zelle = blatt.cell(row=zeile, column=6, value=betrag_wert)
+        zelle.number_format = format_euro
+        zelle.font = Font(bold=betont)
+    zeile += 2
+    for text in [rechnung["payment_terms"], invoice_bank_line(rechnung), *(rechnung.get("notes") or [])]:
+        if text:
+            blatt.cell(row=zeile, column=1, value=_safe_cell_value(text))
+            zeile += 1
+    for spalte, breite in zip("ABCDEF", (16, 52, 10, 12, 18, 18)):
+        blatt.column_dimensions[spalte].width = breite
+    output = BytesIO()
+    mappe.save(output)
+    return output.getvalue()
+
+
+def invoice_email_subject(rechnung: dict[str, Any]) -> str:
+    return f"Rechnung {rechnung['invoice_number']}" + (
+        f" – {rechnung['subject']}" if rechnung["subject"].lower() != "rechnung" else "")
+
+
+def invoice_email_text(artifact: dict[str, Any]) -> str:
+    """Rechnung als E-Mail-Text — für den .eml-Export und den Mail-Entwurf."""
+
+    rechnung = normalize_invoice_artifact(artifact)
+    zeilen = [rechnung["salutation"], ""]
+    if rechnung.get("intro"):
+        zeilen += [rechnung["intro"], ""]
+    zeilen += [f"{name}: {wert}" for name, wert in _rechnung_kopfdaten(rechnung)] + [""]
+    for nummer, beschreibung, menge, einzel, gesamt in _rechnung_positionszeilen(rechnung):
+        zeilen.append(f"{nummer}. {beschreibung} – {menge} × {einzel} = {gesamt}")
+    zeilen.append("")
+    zeilen += [f"{bezeichnung}: {wert}" for bezeichnung, wert, _ in invoice_totals_lines(rechnung)]
+    zeilen += ["", rechnung["payment_terms"]]
+    bank = invoice_bank_line(rechnung)
+    if bank:
+        zeilen.append(bank)
+    zeilen += list(rechnung.get("notes") or [])
+    zeilen += ["", rechnung["closing"], "", rechnung.get("signature") or ""]
+    if rechnung.get("tax_id"):
+        zeilen += ["", f"Steuernr./USt-IdNr.: {rechnung['tax_id']}"]
+    return "\n".join(zeilen).strip() + "\n"
+
+
+def build_invoice_eml(artifact: dict[str, Any]) -> bytes:
+    rechnung = normalize_invoice_artifact(artifact)
+    message = EmailMessage()
+    message["Subject"] = invoice_email_subject(rechnung)
+    message["To"] = rechnung["recipient"].get("name") or "Empfänger"
+    absender_mail = str(rechnung["sender"].get("email") or "").strip()
+    absender_name = str(rechnung["sender"].get("name") or "").strip()
+    if absender_mail:
+        message["From"] = f"{absender_name} <{absender_mail}>" if absender_name else absender_mail
+    message["X-Unsent"] = "1"
+    message.set_content(invoice_email_text(rechnung), charset="utf-8")
+    return message.as_bytes()
+
+
 def title_from_content(title: str, content: str) -> tuple[str, str]:
     """Nimmt die erste Überschrift des Textes als Dokumenttitel.
 
@@ -1241,6 +1588,23 @@ def build_export(
         # Auftaktfolie und muss im Inhalt bleiben.
         title, content = title_from_content(title, content)
     title = safe_title(title)
+    if isinstance(artifact, dict) and artifact.get("type") == "invoice":
+        rechnung = normalize_invoice_artifact(artifact)
+        rechnung_builders = {
+            "docx": (
+                build_invoice_docx,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            "pdf": (build_invoice_pdf, "application/pdf"),
+            "xlsx": (
+                build_invoice_xlsx,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            "eml": (build_invoice_eml, "message/rfc822"),
+        }
+        if format_name in rechnung_builders:
+            builder, media_type = rechnung_builders[format_name]
+            return builder(rechnung), media_type, f"{invoice_filename(rechnung)}.{format_name}"
     if isinstance(artifact, dict) and artifact.get("type") == "letter":
         letter = normalize_letter_artifact(artifact)
         letter_title = safe_title(letter["subject"])

@@ -12,6 +12,7 @@ from typing import Any
 
 ACTIVE_SKILL_IDS = {
     "letter",
+    "invoice",
     "report",
     "protocol",
     "explanation",
@@ -24,7 +25,7 @@ ACTIVE_SKILL_IDS = {
 # Formatgebende Skills schließen einander aus: Ein Text ist entweder ein Brief
 # oder eine Anleitung, nicht beides.
 DOCUMENT_SKILL_IDS = {
-    "letter", "report", "protocol", "presentation", "explanation", "guide",
+    "letter", "invoice", "report", "protocol", "presentation", "explanation", "guide",
 }
 # Umfang und Dichte gelten für jede Antwort — mit oder ohne Skill. „auto“ und
 # „balanced“ sind die Vorgaben und fügen dem Prompt bewusst nichts hinzu.
@@ -80,6 +81,11 @@ SKILL_RUNTIMES = {
     "letter": SkillRuntime(
         "Brief",
         "Genau einen fertigen, versandfähigen Brief erzeugen; keine Anleitung.",
+    ),
+    "invoice": SkillRuntime(
+        "Rechnung",
+        "Genau eine vollständige Rechnung mit Positionen, Summen, Zahlungsziel und "
+        "Bankverbindung erzeugen; Beträge nur aus dem Auftrag.",
     ),
     "report": SkillRuntime(
         "Bericht",
@@ -233,8 +239,75 @@ LETTER_CLARIFICATION_QUESTION_PATTERN = re.compile(
 )
 
 
+# Rechnung — „Schreibe eine Rechnung an …“, „Rechnung für …“. „Rechnung“
+# heißt auch Berechnung („mach mal eine Rechnung, was ich spare“); darum
+# braucht es zusätzlich ein Merkmal einer echten Rechnung.
+INVOICE_CREATION_PATTERN = re.compile(
+    r"\b(?:schreib\w*|erstell\w*|mach\w*|fertig\w*|generier\w*|verfass\w*|"
+    r"stell\w*|leg\w*|brauch\w*|benötig\w*|entwirf)\b[\s\S]{0,80}?\brechnung\w*\b"
+    r"|\brechnung\s+(?:an|für|über)\b",
+    re.IGNORECASE,
+)
+INVOICE_SIGNAL_PATTERN = re.compile(
+    r"€|\beur\b|\beuro\b|\bbrutto\b|\bnetto\b|\biban\b|\bleistung\w*|\bposten\b|"
+    r"\bposition\w*|\bzahlbar\b|\bzahlungsziel\b|\bkunde\w*|\bempfänger\b|\bpauschal\w*|"
+    r"\brechnung\s+(?:an|für|über)\b|\bonline-?rechnung\b",
+    re.IGNORECASE,
+)
+INVOICE_EXPLANATION_PATTERN = re.compile(
+    r"\b(?:was ist|was gehört|wie (?:schreibe|erstelle|stelle)|erklär\w*|tipps|pflichtangaben)\b"
+    r"[\s\S]{0,60}?\brechnung",
+    re.IGNORECASE,
+)
+# Folgewünsche an eine gerade erstellte Rechnung („die Posten als Tabelle“,
+# „Zahlungsziel 30 Tage“). Fragen bleiben Fragen.
+INVOICE_FOLLOWUP_PATTERN = re.compile(
+    r"\b(?:posten|position\w*|tabelle|summe|betrag|beträge|brutto|netto|mwst|ust|"
+    r"umsatzsteuer|steuer|iban|bic|bank\w*|zahlungsziel|frist|werktag\w*|tag(?:e|en)|"
+    r"rechnungsnummer|nummer|datum|leistung\w*|anrede|gruß\w*|empfänger|adresse|rabatt|skonto)\b",
+    re.IGNORECASE,
+)
+FRAGE_ANFANG = re.compile(r"^\s*(?:was|wie|warum|wieso|weshalb|wozu|welche[rsn]?|wann)\b", re.IGNORECASE)
+
+
+def detect_invoice(prompt: str) -> bool:
+    text = re.sub(r"\s+", " ", prompt or "").strip()
+    if not text or INVOICE_EXPLANATION_PATTERN.search(text):
+        return False
+    return bool(INVOICE_CREATION_PATTERN.search(text) and INVOICE_SIGNAL_PATTERN.search(text))
+
+
+def _is_invoice_followup(prompt: str, recent_history: Any) -> bool:
+    """Ändert die Nachricht die zuletzt erstellte Rechnung?"""
+
+    if not isinstance(recent_history, list) or not (prompt or "").strip():
+        return False
+    letzte = next(
+        (
+            str(item.get("content") or "")
+            for item in reversed(recent_history[-4:])
+            if isinstance(item, dict) and item.get("role") == "assistant"
+        ),
+        "",
+    )
+    if not letzte.startswith("Rechnung Nr. "):
+        return False
+    if FRAGE_ANFANG.search(prompt) and not re.search(r"\b(?:kannst|könntest)\b", prompt, re.I):
+        return False
+    return bool(INVOICE_FOLLOWUP_PATTERN.search(prompt) or HTML_FREIE_AENDERUNG.search(prompt))
+
+
+HTML_FREIE_AENDERUNG = re.compile(
+    r"\b(?:änder\w*|ergänz\w*|füg\w*|korrigier\w*|ersetz\w*|entfern\w*|nimm|"
+    r"pass\w*\s+(?:\S+\s+){0,4}?an|nochmal|erneut)\b",
+    re.IGNORECASE,
+)
+
+
 def detect_task_skill(prompt: str) -> str | None:
     text = re.sub(r"\s+", " ", prompt or "").strip()
+    if detect_invoice(text):
+        return "invoice"
     if not text or LETTER_EXPLANATION_PATTERN.search(text):
         return None
     if LETTER_CREATION_PATTERN.search(text) or LETTER_TARGET_PATTERN.search(text):
@@ -305,6 +378,12 @@ def resolve_task_skill(
     recent_history: Any = None,
 ) -> str | None:
     selected = normalize_active_skills(active_skills)
+    if "invoice" in selected:
+        return "invoice"
+    # Eine Rechnung ist eine eigene Dokumentart, auch wenn der Brief-Skill
+    # aktiv ist — ebenso die Änderung einer gerade erstellten Rechnung.
+    if detect_invoice(prompt) or _is_invoice_followup(prompt, recent_history):
+        return "invoice"
     if "letter" in selected:
         return "letter"
     # Eine ausdrücklich gewählte andere Dokumentart überschreibt die automatische
@@ -791,8 +870,10 @@ def letter_skill_system_prompt(
         "Nutzerangaben. Ersetze einen konkreten Auftrag niemals durch eine allgemeine "
         "Bitte um Sachstand oder Stellungnahme.\n\n"
         "Der Brief benötigt zwingend: Empfänger, Datum, optionales Aktenzeichen, "
-        "präzisen Betreff, Anrede, zusammenhängende Textabsätze, die Schlussformel "
-        "„Mit freundlichen Grüßen“ und eine Unterschriftszeile. Schreibe keine "
+        "präzisen Betreff, Anrede, zusammenhängende Textabsätze, eine Grußformel "
+        "und eine Unterschriftszeile. Verlangt der Nutzer oder ein vorhandener Entwurf "
+        "eine bestimmte Anrede oder Grußformel (etwa „Hallo …“ oder „Freundliche "
+        "Grüße“), übernimm sie wörtlich; sonst gilt „Mit freundlichen Grüßen“. Schreibe keine "
         "Überschriften wie Einleitung, Sachverhalt, rechtliche Bewertung oder "
         "Schlussfolgerung, sofern der Nutzer sie nicht ausdrücklich verlangt. "
         "Füge nach dem Brief keine Tipps, Quellenlisten oder Hinweise an.\n\n"
@@ -899,7 +980,8 @@ EMPFAENGER_FELDER = {
 ANREDE_ZEILE = re.compile(r"^(sehr geehrte|liebe|lieber|hallo|guten tag)\b", re.I)
 GRUSS_ZEILE = re.compile(
     r"^(mit freundlichen gr(ü|ue)(ß|ss)en|freundliche gr(ü|ue)(ß|ss)e|viele gr(ü|ue)(ß|ss)e|"
-    r"beste gr(ü|ue)(ß|ss)e|herzliche gr(ü|ue)(ß|ss)e|hochachtungsvoll)",
+    r"beste gr(ü|ue)(ß|ss)e|herzliche gr(ü|ue)(ß|ss)e|liebe gr(ü|ue)(ß|ss)e|"
+    r"schöne gr(ü|ue)(ß|ss)e|hochachtungsvoll)",
     re.I,
 )
 AUFZAEHLUNG = re.compile(r"^\s*(?:[-*•–]|\d+[.)])\s+")
@@ -1152,9 +1234,22 @@ def normalize_letter_artifact(
             "Sehr geehrte Damen und Herren,",
         ),
         "paragraphs": paragraphs,
-        "closing": "Mit freundlichen Grüßen",
+        "closing": _grussformel(value.get("closing")),
         "signature": _placeholder(sender.get("name", ""), "[Ihr Name]"),
     }
+
+
+def _grussformel(wert: Any) -> str:
+    """Eine echte Grußformel des Modells bleibt — sonst die übliche.
+
+    Bis 18.10.2026 stand hier fest „Mit freundlichen Grüßen“: Aus dem
+    gewünschten „Freundliche Grüße“ wurde beim Brief-Skill wieder die Standardformel.
+    """
+
+    text = _clean(wert, 80).rstrip(",")
+    if text and len(text) <= 60 and GRUSS_ZEILE.match(text):
+        return text
+    return "Mit freundlichen Grüßen"
 
 
 def _letter_artifact_quality(

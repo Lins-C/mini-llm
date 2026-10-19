@@ -291,6 +291,14 @@ def _empty_profile(name: str = "", email: str = "") -> dict[str, Any]:
         "pets": "",
         "important_details": "",
         "global_persona": "",
+        # Für den Rechnungs-Skill: Pflichtangaben des Absenders.
+        "invoice": {
+            "tax_id": "",
+            "vat_mode": "standard",
+            "iban": "",
+            "bic": "",
+            "bank": "",
+        },
     }
 
 
@@ -316,12 +324,12 @@ def load_profile(user_id: str) -> tuple[bool, dict[str, Any]]:
         stored = {}
     if isinstance(stored, dict):
         for key in profile:
-            if key == "address":
-                address = stored.get("address")
-                if isinstance(address, dict):
-                    profile["address"].update({
-                        field: str(address.get(field) or "")
-                        for field in profile["address"]
+            if key in {"address", "invoice"}:
+                nested = stored.get(key)
+                if isinstance(nested, dict):
+                    profile[key].update({
+                        field: str(nested.get(field) or profile[key][field])
+                        for field in profile[key]
                     })
             elif key in stored:
                 profile[key] = str(stored.get(key) or "")

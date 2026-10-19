@@ -16,6 +16,13 @@ const SKILL_CATALOG = [
     icon: '<path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/>',
   },
   {
+    id: "invoice",
+    name: "Rechnung",
+    description: "Positionen, USt und Summe",
+    group: "document",
+    icon: '<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4zM9 8h6M9 11.5h6M12 15h3"/>',
+  },
+  {
     id: "report",
     name: "Bericht",
     description: "Sachstand und Ergebnisse",
@@ -465,6 +472,7 @@ function emptyProfile() {
     pets: "",
     important_details: "",
     global_persona: "",
+    invoice: { tax_id: "", vat_mode: "standard", iban: "", bic: "", bank: "" },
   };
 }
 
@@ -2599,10 +2607,100 @@ function letterArtifactHtml(artifact) {
     </section>`;
 }
 
+/* Rechnung als Karte: Summen kommen fertig gerechnet vom Server. Hinweise auf
+   fehlende Pflichtangaben stehen nur hier, nie im Export. */
+function invoiceArtifactHtml(artifact) {
+  const clean = (value) => escapeHtml(String(value ?? "").trim());
+  const money = (value) => `${Number(value || 0).toLocaleString("de-DE", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })} €`;
+  const quantity = (value) => Number(value || 0).toLocaleString("de-DE", { maximumFractionDigits: 3 });
+  const addressLines = (value, withContact = false) => {
+    const lines = [
+      withContact && value?.organization !== value?.name ? value?.organization : "",
+      value?.name, value?.department, value?.street,
+      [value?.postal_code, value?.city].filter(Boolean).join(" "),
+      value?.country,
+    ];
+    if (withContact) lines.push(value?.email, value?.phone);
+    return lines.map((line) => String(line || "").trim()).filter(Boolean)
+      .map((line) => `<span>${clean(line)}</span>`).join("");
+  };
+  const items = (Array.isArray(artifact?.items) ? artifact.items : []).map((item) => `
+      <tr>
+        <td>${clean(item.pos)}</td>
+        <td>${clean(item.description)}</td>
+        <td>${clean(`${quantity(item.quantity)} ${item.unit || ""}`)}</td>
+        <td class="num">${item.included ? "inklusive" : money(item.unit_price)}</td>
+        <td class="num">${item.included ? "inklusive" : money(item.total)}</td>
+      </tr>`).join("");
+  const rate = Number(artifact?.vat_rate || 0).toLocaleString("de-DE", { maximumFractionDigits: 2 });
+  const totals = artifact?.small_business
+    ? [["Gesamtbetrag", artifact?.gross, true]]
+    : artifact?.prices_are === "brutto"
+      ? [["Gesamtbetrag (brutto)", artifact?.gross, true],
+        [`darin enthalten ${rate} % USt`, artifact?.vat, false],
+        ["Nettobetrag", artifact?.net, false]]
+      : [["Nettobetrag", artifact?.net, false],
+        [`zzgl. ${rate} % USt`, artifact?.vat, false],
+        ["Gesamtbetrag", artifact?.gross, true]];
+  const bank = [
+    artifact?.iban ? `IBAN ${artifact.iban}` : "",
+    artifact?.bic ? `BIC ${artifact.bic}` : "",
+    artifact?.bank || "",
+  ].filter(Boolean).join(" · ");
+  const hints = (Array.isArray(artifact?.hints) ? artifact.hints : []).filter(Boolean);
+  const meta = [
+    ["Rechnungsnummer", artifact?.invoice_number],
+    ["Rechnungsdatum", artifact?.invoice_date],
+    ["Leistungsdatum", artifact?.service_date],
+    ["Kundennummer", artifact?.customer_number],
+  ].filter(([, value]) => String(value || "").trim());
+  const notes = (Array.isArray(artifact?.notes) ? artifact.notes : [])
+    .filter(Boolean).map((note) => `<p>${clean(note)}</p>`).join("");
+  return `
+    <section class="letter-artifact invoice-artifact" aria-label="Fertige Rechnung">
+      <div class="letter-skill-badge">Rechnung</div>
+      ${hints.length ? `<div class="invoice-hints" role="note"><strong>Vor dem Versand prüfen</strong><ul>${
+        hints.map((hint) => `<li>${clean(hint)}</li>`).join("")}</ul></div>` : ""}
+      <div class="letter-address-grid">
+        <div class="letter-address recipient"><small>Empfänger</small>${addressLines(artifact?.recipient)}</div>
+        <div class="letter-address sender"><small>Absender</small>${addressLines(artifact?.sender, true)}${
+          artifact?.tax_id ? `<span>Steuernr./USt-IdNr.: ${clean(artifact.tax_id)}</span>` : ""}</div>
+      </div>
+      <h3 class="invoice-title">Rechnung</h3>
+      ${String(artifact?.subject || "").trim().toLowerCase() !== "rechnung"
+        ? `<div class="invoice-subject">${clean(artifact?.subject)}</div>` : ""}
+      <dl class="invoice-meta">${meta.map(([label, value]) => `<dt>${label}</dt><dd>${clean(value)}</dd>`).join("")}</dl>
+      <div class="letter-copy">
+        <p>${clean(artifact?.salutation)}</p>
+        ${artifact?.intro ? `<p>${clean(artifact.intro)}</p>` : ""}
+      </div>
+      <div class="invoice-table-wrap">
+        <table class="invoice-table">
+          <thead><tr><th>Pos.</th><th>Leistung</th><th>Menge</th><th class="num">Einzelpreis</th><th class="num">Gesamt</th></tr></thead>
+          <tbody>${items}</tbody>
+        </table>
+      </div>
+      <table class="invoice-totals">${totals.map(([label, value, strong]) => `
+        <tr class="${strong ? "strong" : ""}"><td>${clean(label)}</td><td class="num">${money(value)}</td></tr>`).join("")}
+      </table>
+      <div class="letter-copy invoice-terms">
+        <p>${clean(artifact?.payment_terms)}</p>
+        ${bank ? `<p>Bankverbindung: ${clean(bank)}</p>` : ""}
+        ${notes}
+        <p class="letter-closing">${clean(artifact?.closing || "Mit freundlichen Grüßen")}</p>
+        <p class="letter-signature">${clean(artifact?.signature)}</p>
+      </div>
+    </section>`;
+}
+
 function renderMessageContent(contentNode, message, fallbackContent = "") {
   const rawContent = message?.content ?? fallbackContent;
   if (message?.artifact?.type === "letter") {
     contentNode.innerHTML = letterArtifactHtml(message.artifact);
+  } else if (message?.artifact?.type === "invoice") {
+    contentNode.innerHTML = invoiceArtifactHtml(message.artifact);
   } else {
     contentNode.innerHTML = safeMarkdown(rawContent);
   }
@@ -2845,7 +2943,8 @@ function renderArtifactActions(node, message) {
     && !(message.status === "error" && message.content.trim().startsWith("Fehler:"));
   actions.hidden = !hasContent;
   if (!hasContent) return;
-  if (window.joshi && message.artifact?.type !== "letter") {
+  const documentArtifact = ["letter", "invoice"].includes(message.artifact?.type);
+  if (window.joshi && !documentArtifact) {
     const joshi = document.createElement("button");
     joshi.type = "button";
     joshi.className = "artifact-export export-joshi";
@@ -2861,7 +2960,8 @@ function renderArtifactActions(node, message) {
     ["XLSX", "xlsx", "Als Excel-Arbeitsmappe speichern"],
     ["PDF", "pdf", "Als PDF-Dokument speichern"],
     ["E-Mail", "eml", "Als sendbaren Entwurf in der Mail-App öffnen"],
-  ].forEach(([label, format, title]) => {
+  ].filter(([, format]) => !(format === "pptx" && message.artifact?.type === "invoice"))
+    .forEach(([label, format, title]) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `artifact-export export-${format}`;
@@ -2890,7 +2990,7 @@ function renderResponseControls(node, message, isLatestAssistant) {
   const hasAnswer = Boolean((message.content || "").trim())
     && !(message.status === "error" && message.content.trim().startsWith("Fehler:"));
   if (!hasAnswer) return;
-  if (message.artifact?.type === "letter") return;
+  if (["letter", "invoice"].includes(message.artifact?.type)) return;
   // „Weiter" an einer fertigen Antwort ließ das Modell Neues erfinden
   // (12.10.2026: Zusagen wie „Wir melden uns innerhalb von 48 Stunden").
   // Angeboten wird es nur, wo die Antwort tatsächlich abgebrochen ist.
@@ -3058,6 +3158,11 @@ function fillProfileForm() {
     "#profile-pets": profile.pets,
     "#profile-important-details": profile.important_details,
     "#profile-global-persona": profile.global_persona,
+    "#profile-tax-id": profile.invoice?.tax_id,
+    "#profile-vat-mode": profile.invoice?.vat_mode || "standard",
+    "#profile-iban": profile.invoice?.iban,
+    "#profile-bic": profile.invoice?.bic,
+    "#profile-bank": profile.invoice?.bank,
   };
   Object.entries(fields).forEach(([selector, value]) => {
     $(selector).value = value || "";
@@ -3084,6 +3189,13 @@ function profileFromForm() {
     pets: $("#profile-pets").value.trim(),
     important_details: $("#profile-important-details").value.trim(),
     global_persona: $("#profile-global-persona").value.trim(),
+    invoice: {
+      tax_id: $("#profile-tax-id").value.trim(),
+      vat_mode: $("#profile-vat-mode").value === "small" ? "small" : "standard",
+      iban: $("#profile-iban").value.trim(),
+      bic: $("#profile-bic").value.trim(),
+      bank: $("#profile-bank").value.trim(),
+    },
   };
 }
 
@@ -3663,7 +3775,7 @@ async function streamAssistantRequest({
           assistantMessage.content = `${baseContent}${joiner}${generatedText}`;
           renderMessageContent(view.contentNode, assistantMessage);
           if (state.streamFollow) scrollDown(false);
-        } else if (event.type === "artifact" && event.artifact?.type === "letter") {
+        } else if (event.type === "artifact" && ["letter", "invoice"].includes(event.artifact?.type)) {
           setProgress("");
           assistantMessage.artifact = event.artifact;
           generatedText = String(event.content || "");
