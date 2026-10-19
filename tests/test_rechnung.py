@@ -171,6 +171,57 @@ class ToleranzTests(unittest.TestCase):
         self.assertNotIn("automatisch vergeben", " ".join(neu["hints"]))
 
 
+class BankverbindungTests(unittest.TestCase):
+    """19.10.2026: Pro Nutzer mehrere Konten, das aktive steht auf der Rechnung."""
+
+    KONTEN = [
+        {"label": "Privat", "holder": "Max Mustermann", "iban": "DE00 1234 5678 9012 3456 78",
+         "bic": "", "bank": "", "active": False},
+        {"label": "Geschäft", "holder": "Beispiel GmbH", "iban": "de89370400440532013000",
+         "bic": "cobadeffxxx", "bank": "Musterbank", "active": True},
+    ]
+
+    def profil(self, konten):
+        return dict(PROFIL, invoice={"tax_id": "1", "vat_mode": "standard", "accounts": konten})
+
+    def test_the_active_account_is_set_with_its_holder(self):
+        ohne_iban = dict(MODELLANTWORT, iban="")
+        r = rechnung(ohne_iban, profil=self.profil(self.KONTEN))
+        self.assertEqual(r["iban"], GUELTIGE_IBAN)
+        self.assertEqual((r["bic"], r["bank"], r["account_holder"]), ("COBADEFFXXX", "Musterbank", "Beispiel GmbH"))
+        from app.rechnung import invoice_bank_line
+        self.assertIn("Kontoinhaber Beispiel GmbH", invoice_bank_line(r))
+        # Gespeichert und erneut gerendert bleibt der Inhaber.
+        self.assertEqual(normalize_invoice_artifact(r)["account_holder"], "Beispiel GmbH")
+
+    def test_an_iban_in_the_request_wins_and_without_the_profile_none_is_used(self):
+        r = rechnung(dict(MODELLANTWORT, iban="DE00 1234 5678 9012 3456 78"), profil=self.profil(self.KONTEN))
+        self.assertEqual(r["iban"], "DE00 1234 5678 9012 3456 78")
+        aus = rechnung(dict(MODELLANTWORT, iban=""), profil=self.profil(self.KONTEN), aktiv=False)
+        self.assertEqual(aus["iban"], "")
+        self.assertIn("Keine Bankverbindung", " ".join(aus["hints"]))
+
+    def test_profiles_keep_exactly_one_active_account_and_old_profiles_migrate(self):
+        from app.database import bankkonten_bereinigen
+        alt = bankkonten_bereinigen([], {"iban": "de89 3704 0044 0532 0130 00", "bic": "x", "bank": "y"})
+        self.assertEqual(len(alt), 1)
+        self.assertTrue(alt[0]["active"])
+        self.assertEqual(alt[0]["iban"], GUELTIGE_IBAN)
+        keins = bankkonten_bereinigen([dict(k, active=False) for k in self.KONTEN])
+        self.assertEqual([k["active"] for k in keins], [True, False])
+        zwei = bankkonten_bereinigen([dict(k, active=True) for k in self.KONTEN])
+        self.assertEqual([k["active"] for k in zwei], [True, False])
+        self.assertEqual(len(bankkonten_bereinigen([{"iban": "DE1"}] * 9)), 6)
+
+    def test_the_saved_profile_mirrors_the_active_account(self):
+        payload = main.ProfilePayload(invoice={"tax_id": " 1 ", "accounts": self.KONTEN})
+        gespeichert = main.normalized_profile_payload(payload)
+        self.assertEqual(gespeichert["invoice"]["iban"], GUELTIGE_IBAN)
+        self.assertEqual(gespeichert["invoice"]["holder"], "Beispiel GmbH")
+        self.assertEqual(gespeichert["invoice"]["tax_id"], "1")
+        self.assertEqual(len(gespeichert["invoice"]["accounts"]), 2)
+
+
 class PflichtangabenTests(unittest.TestCase):
     def test_number_date_terms_and_sender_are_set_not_invented(self):
         r = rechnung()
@@ -320,8 +371,11 @@ class OberflaechenTests(unittest.TestCase):
         self.assertIn('id: "invoice"', js)
         self.assertIn("function invoiceArtifactHtml", js)
         self.assertIn('message?.artifact?.type === "invoice"', js)
-        for feld in ("profile-tax-id", "profile-vat-mode", "profile-iban", "profile-bic", "profile-bank"):
+        for feld in ("profile-tax-id", "profile-vat-mode", "profile-bank-accounts", "profile-add-bank-account"):
             self.assertIn(f'id="{feld}"', html)
+        for funktion in ("function bankAccountRow", "function setActiveBankAccount", "function ibanValid",
+                         "accounts: bankAccountsFromForm()"):
+            self.assertIn(funktion, js)
 
 
 if __name__ == "__main__":

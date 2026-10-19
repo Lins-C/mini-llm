@@ -13,7 +13,7 @@
   <title>Mini LLM</title>
   <link rel="icon" type="image/png" href="/static/favicon.png?v=2">
   <link rel="apple-touch-icon" href="/static/logo-180.png?v=2">
-  <link rel="stylesheet" href="/static/styles.css?v=76">
+  <link rel="stylesheet" href="/static/styles.css?v=77">
 </head>
 <body>
   <div id="drop-overlay" class="drop-overlay" hidden>
@@ -431,9 +431,16 @@
           <div class="profile-grid">
             <label class="profile-field"><span>Steuernummer oder USt-IdNr.</span><input id="profile-tax-id" maxlength="60" autocomplete="off"></label>
             <label class="profile-field"><span>Umsatzsteuer</span><select id="profile-vat-mode"><option value="standard">Regelbesteuerung (19 %)</option><option value="small">Kleinunternehmer (§ 19 UStG)</option></select></label>
-            <label class="profile-field span-2"><span>IBAN</span><input id="profile-iban" maxlength="60" autocomplete="off" spellcheck="false"></label>
-            <label class="profile-field"><span>BIC</span><input id="profile-bic" maxlength="20" autocomplete="off" spellcheck="false"></label>
-            <label class="profile-field"><span>Bank</span><input id="profile-bank" maxlength="120" autocomplete="off"></label>
+          </div>
+        </section>
+        <section class="settings-section">
+          <div class="settings-section-head">
+            <h3>Bankverbindung</h3>
+            <p>Gilt für dein Nutzerkonto. Das aktive Konto setzt der Rechnungs-Skill ein, wenn „Über mich“ eingeschaltet ist. Eine IBAN im Auftrag hat Vorrang. Geht nicht an das Modell.</p>
+          </div>
+          <div class="bank-accounts">
+            <div id="profile-bank-accounts" class="bank-account-list"></div>
+            <button id="profile-add-bank-account" class="secondary-button bank-account-add" type="button">+ Bankverbindung hinzufügen</button>
           </div>
         </section>
         <section class="settings-section">
@@ -872,7 +879,7 @@
     </div>
   </dialog>
 
-  <script src="/static/app.js?v=68" defer></script>
+  <script src="/static/app.js?v=69" defer></script>
   <script src="/static/modelle.js?v=1" defer></script>
   <script src="/static/joshi.js?v=12" defer></script>
   <a class="made-by" href="https://ai-implements.com" target="_blank" rel="noopener">made by AI-Implements</a>

@@ -21,6 +21,7 @@ import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
+from app.database import aktives_bankkonto
 from app.task_skills import _clean, _ist_platzhalter, parse_structured_content
 
 CENT = Decimal("0.01")
@@ -445,14 +446,18 @@ def normalize_invoice_artifact(
         steuer_id = _clean(rechnung_profil.get("tax_id"), 60) if profile_enabled else ""
         kleinunternehmer = bool(profile_enabled) and rechnung_profil.get("vat_mode") == "small"
 
-    # Bankverbindung: Angaben im Auftrag gehen dem Profil vor.
+    # Bankverbindung: Angaben im Auftrag gehen dem Profil vor. Aus dem Profil
+    # kommt das unter „Über mich → Bankverbindung“ aktiv geschaltete Konto.
     iban = _clean(wert.get("iban"), 60)
     bic = _clean(wert.get("bic"), 20)
     bank = _clean(wert.get("bank"), 120)
+    kontoinhaber = _clean(wert.get("account_holder"), 120) if gespeichert else ""
     if profile_enabled and not iban:
-        iban = _clean(rechnung_profil.get("iban"), 60)
-        bic = bic or _clean(rechnung_profil.get("bic"), 20)
-        bank = bank or _clean(rechnung_profil.get("bank"), 120)
+        konto = aktives_bankkonto(rechnung_profil)
+        iban = _clean(konto.get("iban"), 60)
+        bic = bic or _clean(konto.get("bic"), 20)
+        bank = bank or _clean(konto.get("bank"), 120)
+        kontoinhaber = _clean(konto.get("holder"), 120)
     iban = iban_formatieren(iban) if iban else ""
 
     # Positionen
@@ -633,6 +638,7 @@ def normalize_invoice_artifact(
         "iban": iban,
         "bic": bic.upper(),
         "bank": bank,
+        "account_holder": kontoinhaber,
         "closing": gruss,
         "signature": absender.get("name") or "",
         "notes": notizen,
@@ -740,6 +746,8 @@ def invoice_plain_text(rechnung: dict[str, Any]) -> str:
 
 def invoice_bank_line(rechnung: dict[str, Any]) -> str:
     teile = []
+    if rechnung.get("account_holder") and rechnung.get("iban"):
+        teile.append(f"Kontoinhaber {rechnung['account_holder']}")
     if rechnung.get("iban"):
         teile.append(f"IBAN {rechnung['iban']}")
     if rechnung.get("bic"):

@@ -35,6 +35,7 @@ from app.database import (
     DATA_DIR,
     ALLOW_REGISTRATION,
     allowed_context_ids,
+    bankkonten_bereinigen,
     authenticate,
     create_session,
     create_user,
@@ -527,12 +528,23 @@ class ProfileAddressPayload(BaseModel):
     country: str = Field(default="", max_length=100)
 
 
+class ProfileBankAccountPayload(BaseModel):
+    label: str = Field(default="", max_length=60)
+    holder: str = Field(default="", max_length=120)
+    iban: str = Field(default="", max_length=60)
+    bic: str = Field(default="", max_length=20)
+    bank: str = Field(default="", max_length=120)
+    active: bool = False
+
+
 class ProfileInvoicePayload(BaseModel):
     tax_id: str = Field(default="", max_length=60)
     vat_mode: str = Field(default="standard", pattern="^(standard|small)$")
     iban: str = Field(default="", max_length=60)
     bic: str = Field(default="", max_length=20)
     bank: str = Field(default="", max_length=120)
+    holder: str = Field(default="", max_length=120)
+    accounts: list[ProfileBankAccountPayload] = Field(default_factory=list, max_length=6)
 
 
 class ProfilePayload(BaseModel):
@@ -1954,9 +1966,18 @@ def normalized_profile_payload(payload: ProfilePayload) -> dict[str, Any]:
         key: str(value or "").strip()
         for key, value in result["address"].items()
     }
+    rechnung = result["invoice"]
+    konten = bankkonten_bereinigen(rechnung.get("accounts"), rechnung)
+    aktiv = next((konto for konto in konten if konto["active"]), {})
     result["invoice"] = {
-        key: str(value or "").strip()
-        for key, value in result["invoice"].items()
+        "tax_id": str(rechnung.get("tax_id") or "").strip(),
+        "vat_mode": rechnung.get("vat_mode") or "standard",
+        # Das aktive Konto steht zusätzlich flach — so lesen es ältere Stellen.
+        "iban": aktiv.get("iban", ""),
+        "bic": aktiv.get("bic", ""),
+        "bank": aktiv.get("bank", ""),
+        "holder": aktiv.get("holder", ""),
+        "accounts": konten,
     }
     return result
 

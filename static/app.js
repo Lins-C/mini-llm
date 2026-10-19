@@ -472,7 +472,7 @@ function emptyProfile() {
     pets: "",
     important_details: "",
     global_persona: "",
-    invoice: { tax_id: "", vat_mode: "standard", iban: "", bic: "", bank: "" },
+    invoice: { tax_id: "", vat_mode: "standard", iban: "", bic: "", bank: "", holder: "", accounts: [] },
   };
 }
 
@@ -2645,6 +2645,7 @@ function invoiceArtifactHtml(artifact) {
         [`zzgl. ${rate} % USt`, artifact?.vat, false],
         ["Gesamtbetrag", artifact?.gross, true]];
   const bank = [
+    artifact?.account_holder && artifact?.iban ? `Kontoinhaber ${artifact.account_holder}` : "",
     artifact?.iban ? `IBAN ${artifact.iban}` : "",
     artifact?.bic ? `BIC ${artifact.bic}` : "",
     artifact?.bank || "",
@@ -3160,13 +3161,15 @@ function fillProfileForm() {
     "#profile-global-persona": profile.global_persona,
     "#profile-tax-id": profile.invoice?.tax_id,
     "#profile-vat-mode": profile.invoice?.vat_mode || "standard",
-    "#profile-iban": profile.invoice?.iban,
-    "#profile-bic": profile.invoice?.bic,
-    "#profile-bank": profile.invoice?.bank,
   };
   Object.entries(fields).forEach(([selector, value]) => {
     $(selector).value = value || "";
   });
+  const accounts = Array.isArray(profile.invoice?.accounts) ? profile.invoice.accounts : [];
+  renderBankAccounts(accounts.length || !profile.invoice?.iban ? accounts : [{
+    label: "Konto", holder: profile.invoice.holder || "", iban: profile.invoice.iban,
+    bic: profile.invoice.bic || "", bank: profile.invoice.bank || "", active: true,
+  }]);
   $("#profile-error").hidden = true;
 }
 
@@ -3192,11 +3195,111 @@ function profileFromForm() {
     invoice: {
       tax_id: $("#profile-tax-id").value.trim(),
       vat_mode: $("#profile-vat-mode").value === "small" ? "small" : "standard",
-      iban: $("#profile-iban").value.trim(),
-      bic: $("#profile-bic").value.trim(),
-      bank: $("#profile-bank").value.trim(),
+      accounts: bankAccountsFromForm(),
     },
   };
+}
+
+/* Bankverbindungen im Profil: pro Nutzerkonto bis zu sechs, genau eine aktiv.
+   Das aktive Konto setzt der Rechnungs-Skill ein, wenn „Über mich“ an ist. */
+const MAX_BANK_ACCOUNTS = 6;
+
+function ibanValid(value) {
+  const compact = String(value || "").replace(/\s+/g, "").toUpperCase();
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(compact)) return false;
+  const rearranged = compact.slice(4) + compact.slice(0, 4);
+  let rest = 0;
+  for (const char of rearranged) {
+    const digits = /[A-Z]/.test(char) ? String(char.charCodeAt(0) - 55) : char;
+    for (const digit of digits) rest = (rest * 10 + Number(digit)) % 97;
+  }
+  return rest === 1;
+}
+
+function updateIbanState(row) {
+  const input = row.querySelector('[data-field="iban"]');
+  const state = row.querySelector(".bank-account-check");
+  const value = input.value.trim();
+  const valid = ibanValid(value);
+  state.textContent = !value ? "" : valid ? "Prüfziffer stimmt" : "Prüfziffer stimmt nicht";
+  state.classList.toggle("ok", Boolean(value) && valid);
+  state.classList.toggle("error", Boolean(value) && !valid);
+}
+
+function setActiveBankAccount(row) {
+  [...document.querySelectorAll("#profile-bank-accounts .bank-account")].forEach((item) => {
+    const active = item === row;
+    item.classList.toggle("active", active);
+    const toggle = item.querySelector(".bank-account-toggle");
+    toggle.setAttribute("aria-pressed", String(active));
+    toggle.textContent = active ? "Aktiv" : "Aktivieren";
+    toggle.title = active
+      ? "Dieses Konto steht auf deinen Rechnungen"
+      : "Dieses Konto für Rechnungen verwenden";
+  });
+}
+
+function bankAccountRow(account = {}) {
+  const row = document.createElement("div");
+  row.className = "bank-account";
+  row.innerHTML = `
+    <div class="bank-account-head">
+      <input data-field="label" maxlength="60" placeholder="Bezeichnung, z. B. Geschäftskonto" aria-label="Bezeichnung">
+      <button type="button" class="bank-account-toggle" aria-pressed="false">Aktivieren</button>
+      <button type="button" class="bank-account-remove" title="Bankverbindung entfernen" aria-label="Bankverbindung entfernen">
+        <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+      </button>
+    </div>
+    <div class="profile-grid">
+      <label class="profile-field span-2"><span>Kontoinhaber</span><input data-field="holder" maxlength="120" autocomplete="off"></label>
+      <label class="profile-field span-2"><span>IBAN <em class="bank-account-check"></em></span><input data-field="iban" maxlength="60" autocomplete="off" spellcheck="false"></label>
+      <label class="profile-field"><span>BIC</span><input data-field="bic" maxlength="20" autocomplete="off" spellcheck="false"></label>
+      <label class="profile-field"><span>Bank</span><input data-field="bank" maxlength="120" autocomplete="off"></label>
+    </div>`;
+  ["label", "holder", "iban", "bic", "bank"].forEach((field) => {
+    row.querySelector(`[data-field="${field}"]`).value = account[field] || "";
+  });
+  row.querySelector('[data-field="iban"]').addEventListener("input", () => updateIbanState(row));
+  row.querySelector(".bank-account-toggle").addEventListener("click", () => setActiveBankAccount(row));
+  row.querySelector(".bank-account-remove").addEventListener("click", () => {
+    const wasActive = row.classList.contains("active");
+    row.remove();
+    const first = $("#profile-bank-accounts .bank-account");
+    if (wasActive && first) setActiveBankAccount(first);
+    updateBankAccountButton();
+  });
+  updateIbanState(row);
+  return row;
+}
+
+function updateBankAccountButton() {
+  const count = [...document.querySelectorAll("#profile-bank-accounts .bank-account")].length;
+  const button = $("#profile-add-bank-account");
+  if (!button) return;
+  button.disabled = count >= MAX_BANK_ACCOUNTS;
+  button.textContent = count ? "+ Weitere Bankverbindung" : "+ Bankverbindung hinzufügen";
+}
+
+function renderBankAccounts(accounts) {
+  const list = $("#profile-bank-accounts");
+  if (!list) return;
+  list.replaceChildren();
+  const rows = (accounts || []).slice(0, MAX_BANK_ACCOUNTS).map((account) => bankAccountRow(account));
+  rows.forEach((row) => list.append(row));
+  const active = rows.find((row, index) => accounts[index]?.active) || rows[0];
+  if (active) setActiveBankAccount(active);
+  updateBankAccountButton();
+}
+
+function bankAccountsFromForm() {
+  return [...document.querySelectorAll("#profile-bank-accounts .bank-account")].map((row) => ({
+    label: row.querySelector('[data-field="label"]').value.trim(),
+    holder: row.querySelector('[data-field="holder"]').value.trim(),
+    iban: row.querySelector('[data-field="iban"]').value.trim(),
+    bic: row.querySelector('[data-field="bic"]').value.trim(),
+    bank: row.querySelector('[data-field="bank"]').value.trim(),
+    active: row.classList.contains("active"),
+  })).filter((account) => account.iban || account.label || account.holder);
 }
 
 function openProfileDialog() {
@@ -4576,6 +4679,15 @@ window.visualViewport?.addEventListener("resize", positionControlCenter);
 window.visualViewport?.addEventListener("scroll", positionControlCenter);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !controlCenter.hidden) closeControlCenter();
+});
+$("#profile-add-bank-account").addEventListener("click", () => {
+  const list = $("#profile-bank-accounts");
+  if (list.children.length >= MAX_BANK_ACCOUNTS) return;
+  const row = bankAccountRow({});
+  list.append(row);
+  if (!list.querySelector(".bank-account.active")) setActiveBankAccount(row);
+  updateBankAccountButton();
+  row.querySelector('[data-field="label"]').focus();
 });
 $("#open-profile").addEventListener("click", () => {
   closeControlCenter();

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import sys
 import secrets
@@ -295,11 +296,63 @@ def _empty_profile(name: str = "", email: str = "") -> dict[str, Any]:
         "invoice": {
             "tax_id": "",
             "vat_mode": "standard",
+            # Das aktive Konto — gespiegelt aus „accounts“ für ältere Aufrufer.
             "iban": "",
             "bic": "",
             "bank": "",
+            "holder": "",
+            "accounts": [],
         },
     }
+
+
+MAX_BANKKONTEN = 6
+
+
+def bankkonten_bereinigen(konten: Any, alt: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Bankverbindungen eines Nutzers: höchstens sechs, genau eine aktiv.
+
+    Ein Profil von vor dem 19.10.2026 kennt nur iban/bic/bank — daraus wird
+    das erste, aktive Konto.
+    """
+
+    def text(wert: Any, grenze: int) -> str:
+        return " ".join(str(wert or "").split())[:grenze]
+
+    ergebnis: list[dict[str, Any]] = []
+    for konto in konten if isinstance(konten, list) else []:
+        if not isinstance(konto, dict):
+            continue
+        iban = re.sub(r"\s+", "", text(konto.get("iban"), 60)).upper()
+        eintrag = {
+            "label": text(konto.get("label"), 60),
+            "holder": text(konto.get("holder"), 120),
+            "iban": " ".join(iban[i:i + 4] for i in range(0, len(iban), 4)),
+            "bic": text(konto.get("bic"), 20).upper(),
+            "bank": text(konto.get("bank"), 120),
+            "active": bool(konto.get("active")),
+        }
+        if eintrag["iban"] or eintrag["label"] or eintrag["holder"]:
+            ergebnis.append(eintrag)
+        if len(ergebnis) >= MAX_BANKKONTEN:
+            break
+    if not ergebnis and isinstance(alt, dict) and text(alt.get("iban"), 60):
+        iban = re.sub(r"\s+", "", text(alt.get("iban"), 60)).upper()
+        ergebnis.append({
+            "label": "Konto", "holder": text(alt.get("holder"), 120),
+            "iban": " ".join(iban[i:i + 4] for i in range(0, len(iban), 4)),
+            "bic": text(alt.get("bic"), 20).upper(), "bank": text(alt.get("bank"), 120),
+            "active": True,
+        })
+    aktiv = next((i for i, konto in enumerate(ergebnis) if konto["active"]), 0)
+    for i, konto in enumerate(ergebnis):
+        konto["active"] = i == aktiv
+    return ergebnis
+
+
+def aktives_bankkonto(rechnungsdaten: dict[str, Any]) -> dict[str, Any]:
+    konten = bankkonten_bereinigen(rechnungsdaten.get("accounts"), rechnungsdaten)
+    return next((konto for konto in konten if konto["active"]), {})
 
 
 def load_profile(user_id: str) -> tuple[bool, dict[str, Any]]:
@@ -330,7 +383,12 @@ def load_profile(user_id: str) -> tuple[bool, dict[str, Any]]:
                     profile[key].update({
                         field: str(nested.get(field) or profile[key][field])
                         for field in profile[key]
+                        if field != "accounts"
                     })
+                    if key == "invoice":
+                        profile[key]["accounts"] = bankkonten_bereinigen(
+                            nested.get("accounts"), nested,
+                        )
             elif key in stored:
                 profile[key] = str(stored.get(key) or "")
     return True, profile

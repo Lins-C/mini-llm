@@ -2018,3 +2018,32 @@ img.welcome-mark { padding: 0; background: none; object-fit: cover; border-radiu
   .message-content .invoice-table { font-size: 11px; }
   .message-content .invoice-totals { min-width: 0; width: 100%; }
 }
+
+/* Bankverbindungen im Profil */
+.bank-accounts { display: grid; gap: 10px; }
+.bank-account-list { display: grid; gap: 10px; }
+.bank-account {
+  padding: 12px; border: 1px solid var(--line); border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-soft) 45%, transparent);
+}
+.bank-account.active { border-color: #377cf6; box-shadow: 0 0 0 3px color-mix(in srgb, #377cf6 10%, transparent); }
+.bank-account-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.bank-account-head input {
+  flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--line);
+  border-radius: 9px; background: var(--bg); color: var(--text); font-weight: 650; outline: 0;
+}
+.bank-account-toggle {
+  height: 30px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 12px; font-weight: 650; cursor: pointer;
+}
+.bank-account-toggle[aria-pressed="true"] { border-color: #377cf6; background: #377cf6; color: #fff; }
+.bank-account-remove {
+  display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.bank-account-remove svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.bank-account-remove:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.bank-account-check { margin-left: 6px; font-style: normal; font-weight: 600; }
+.bank-account-check.ok { color: #2f8f6b; }
+.bank-account-check.error { color: var(--danger); }
+.bank-account-add { justify-self: start; }
